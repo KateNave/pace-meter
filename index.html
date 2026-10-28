@@ -197,6 +197,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       store.set(id, settings[id]);
       drawScale();
       if (id === 'lang' && running) { rec.stop(); } // restarts with the new language on end
+      if (id === 'record' && settings.record) { store.set('noBoth', false); renderRecs(); } // ticking it again gives recording another try
     });
   }
 
@@ -282,6 +283,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     let note = items.length ? '' : 'Each session is saved here when you tap Stop. ';
     note += 'Recordings stay on this phone only; clearing Chrome\'s site data deletes them.';
     try { const e = await navigator.storage.estimate(); if (items.length) note += ` Using ${(e.usage / 1048576).toFixed(1)} MB.`; } catch {}
+    if (store.get('noBoth', false)) note = 'Recording is off on this phone: it stopped hearing your speech while recording. ' + note;
     $('recNote').textContent = note;
   }
   renderRecs();
@@ -306,14 +308,19 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   let trace = [];             // {t, wpm}
   let lastBuzz = 0, finalLog = '', fullLog = '';
   let stream = null, recorder = null, chunks = [];   // the session's audio recording
+  // Some phones can't recognise speech while the page also records; watch the first seconds of listening for that
+  let heard = false, listenAt = 0, level = null, loudest = 0;
 
   const words = s => (s.trim().match(/\S+/g) || []).length;
   const norm = s => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
   // Newer Chrome can listen to the same microphone track that is being recorded; older versions ignore the track.
+  // Where that makes Chrome's speech service fail, it falls back to listening to the microphone directly.
+  let withTrack = false;
   function startRec(r) {
-    const track = stream?.getAudioTracks()[0];
-    if (track) { try { r.start(track); return; } catch {} }
+    const track = store.get('noTrack', false) ? null : stream?.getAudioTracks()[0];
+    withTrack = false;
+    if (track) { try { r.start(track); withTrack = true; return; } catch {} }
     r.start();
   }
 
@@ -331,8 +338,13 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
         showErr('This phone can\'t record and measure pace at the same time, so this session isn\'t being recorded. Turn off "Save a recording" in Settings to skip this message.');
       } else if (e.error === 'audio-capture') {
         showErr('No microphone found, or another app is using it.'); stop();
+      } else if ((e.error === 'network' || e.error === 'language-not-supported') && withTrack) {
+        // the speech service refused the recorded feed: listen to the microphone directly from now on
+        store.set('noTrack', true);
+        heard = false; listenAt = clock(); loudest = 0;
       } else if (e.error === 'network') {
         showErr('Speech recognition needs an internet connection.');
+        $('err').dataset.passing = '1';
       }
       // "no-speech" and "aborted" are routine; onend restarts
     };
@@ -345,6 +357,8 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // Android Chrome sometimes repeats earlier text in later results; merge so nothing is counted twice.
   function onResult(e) {
+    heard = true;
+    if ($('err').dataset.passing) { $('err').hidden = true; delete $('err').dataset.passing; }
     let finalText = '', interim = '';
     for (let i = 0; i < e.results.length; i++) {
       const t = e.results[i][0].transcript;
@@ -377,6 +391,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   function tick() {
     const now = clock();
+    if (level) {
+      loudest = Math.max(loudest, level());
+      // sound reached the recording but no words came back, or the recording gets pure silence: the two are fighting over the mic
+      if (!heard && running && now - listenAt > 7000 && (loudest > 0.02 || loudest < 1e-5)) recognitionStarved();
+    }
     const dt = now - lastTick; lastTick = now;
     if (now - lastWordAt < 2000) speakingMs += dt;   // speaking if a word arrived in the last 2 s
     const W = settings.win * 1000;
@@ -443,7 +462,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     g.beginPath(); g.arc(x(last.t), y(last.wpm), 4, 0, 7); g.fill();
   }
 
-  function showErr(msg) { $('err').hidden = false; $('err').textContent = msg; }
+  function showErr(msg) { $('err').hidden = false; $('err').textContent = msg; delete $('err').dataset.passing; }
 
   async function start() {
     $('err').hidden = true;
@@ -451,7 +470,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     pausedTotal = 0; paused = false; fullLog = '';
     $('transcript').textContent = '';
     $('go').disabled = true;
-    if (settings.record) await startRecording();
+    if (settings.record && !store.get('noBoth', false)) await startRecording();
     $('go').disabled = false;
     speakingMs = 0; lastWordAt = 0; startedAt = lastTick = clock();
     listen();
@@ -459,6 +478,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   async function listen() {
     running = true;
+    heard = false; listenAt = clock(); loudest = 0;
     rec = newRec();
     try { startRec(rec); } catch (e) { showErr('Could not start the microphone: ' + e.message); running = false; dropRecording(); return; }
     document.body.classList.add('listening'); document.body.classList.remove('paused');
@@ -529,9 +549,27 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     recorder = new MediaRecorder(stream, { ...(type && { mimeType: type }), audioBitsPerSecond: 32000 });
     recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
     recorder.start(1000);
+    try {
+      const ac = new AudioContext(), an = ac.createAnalyser(), buf = new Float32Array(1024);
+      an.fftSize = 1024; ac.createMediaStreamSource(stream).connect(an);
+      level = () => { an.getFloatTimeDomainData(buf); let t = 0; for (const v of buf) t += v * v; return Math.sqrt(t / buf.length); };
+      const close = () => ac.close().catch(() => {});
+      stream.getAudioTracks()[0].addEventListener('ended', close);
+      recorder.addEventListener('stop', close);
+    } catch { level = null; }
+  }
+
+  function recognitionStarved() {
+    store.set('noBoth', true);
+    dropRecording();
+    showErr('Your phone stopped hearing your speech while recording, so recording is now off and pace measuring carries on. Recordings stay off on this phone.');
+    heard = true;
+    try { rec.abort(); } catch {}   // its end event restarts recognition without the recording
+    renderRecs();
   }
 
   function dropRecording() {
+    level = null;
     if (recorder) { recorder.ondataavailable = null; try { recorder.stop(); } catch {} }
     stream?.getTracks().forEach(t => t.stop());
     recorder = null; stream = null; chunks = [];
@@ -544,7 +582,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     const base = settings.pauses ? speakingMs : ms;
     const meta = { id: Date.now(), ms, words: total, avg: total > 5 && base > 5000 ? Math.round(total / (base / 60000)) : null,
                    lo: settings.lo, hi: settings.hi, lang: settings.lang, transcript: fullLog.trim() };
-    recorder = null; stream = null;
+    recorder = null; stream = null; level = null;
     $('recNote').textContent = 'Saving recording…';
     r.onstop = async () => {
       s.getTracks().forEach(t => t.stop());
