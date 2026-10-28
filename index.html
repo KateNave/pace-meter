@@ -170,7 +170,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   </div>
 
   <div>
-    <div class="label" style="margin-bottom:6px">Your voice · each tick is a syllable</div>
+    <div class="label" style="margin-bottom:6px">Your voice · green tick: syllable · grey: ignored sound</div>
     <canvas id="voice" aria-label="Loudness of your voice, with a tick for each syllable"></canvas>
   </div>
 
@@ -198,6 +198,14 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
           </select>
         </label>
       </div>
+      <label>Background noise filter
+        <select id="sens">
+          <option value="strict">Strict: noisy room, other people talking</option>
+          <option value="normal" selected>Normal</option>
+          <option value="sensitive">Sensitive: quiet room, soft voice</option>
+        </select>
+      </label>
+      <p class="note">The filter ignores sounds that aren't voiced like speech (knocks, clicks, typing), pure tones (clinks, beeps) and voices much quieter than yours. Calibrate with the setting you'll use.</p>
       <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
       <label class="check"><input type="checkbox" id="pauses"> Leave pauses out of the session average</label>
       <label class="check"><input type="checkbox" id="record" checked> Save a recording of each session</label>
@@ -250,7 +258,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 28 Oct 2026, calibration check</p>
+  <p class="note version">Version: 28 Oct 2026, background filter</p>
 </main>
 
 <script>
@@ -263,11 +271,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // settings
   const settings = { lo: store.get('lo3', 3.4), hi: store.get('hi3', 4), win: store.get('win', 20),
-                     text: store.get('ctext', 'en-pace'), buzz: store.get('buzz', true), pauses: store.get('pauses2', false), record: store.get('record', true) };
+                     text: store.get('ctext', 'en-pace'), sens: store.get('sens', 'normal'), buzz: store.get('buzz', true), pauses: store.get('pauses2', false), record: store.get('record', true) };
   $('lo').value = settings.lo; $('hi').value = settings.hi; $('win').value = settings.win;
-  $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('record').checked = settings.record;
+  $('sens').value = settings.sens; $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('record').checked = settings.record;
   const keys = { pauses: 'pauses2', lo: 'lo3', hi: 'hi3' };
-  for (const id of ['lo', 'hi', 'win', 'buzz', 'pauses', 'record']) {
+  for (const id of ['lo', 'hi', 'win', 'sens', 'buzz', 'pauses', 'record']) {
     $(id).addEventListener('change', e => {
       const el = e.target;
       settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
@@ -366,68 +374,93 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   renderRecs();
 
   // Pace from sound: an audio worklet counts syllables (loudness peaks in voiced speech).
-  const DETECTOR = `// Syllable detector: finds loudness peaks in voiced speech, one per syllable.
-// Feed it microphone samples that have been band-passed to roughly 250-3000 Hz.
+  const DETECTOR = `// Syllable detector: one count per loudness peak in voiced speech. Rejects clicks (too short or unvoiced),
+// pure tones (clinks, beeps) and sounds much quieter than your own recent speech (other people, a TV).
+// Feed it microphone samples band-passed to roughly 250-3000 Hz.
 class SyllableDetector {
-  constructor(sampleRate) {
-    this.hop = Math.round(sampleRate / 100);                 // 10 ms frames
-    this.D = Math.max(1, Math.round(sampleRate / 8000));     // keep ~8 kHz copy for the voicing check
-    this.ring = new Float32Array(240); this.ri = 0; this.dc = 0;
+  constructor(sampleRate, opt) {
+    opt = opt || {};
+    this.floorMargin = opt.floorMargin ?? 10;   // dB above the room's background level
+    this.refMargin = opt.refMargin ?? 16;       // dB below the typical loudness of your recent syllables
+    this.minVoiced = opt.minVoiced ?? 3;        // frames (10 ms each) of continuous voicing a syllable needs
+    this.hop = Math.round(sampleRate / 100);
+    this.D = Math.max(1, Math.round(sampleRate / 8000));
+    this.ring = new Float32Array(240); this.ri = 0; this.dc = 0; this.buf = new Float32Array(240);
     this.acc = 0; this.n = 0; this.t = 0;
-    this.s = null; this.floor = null; this.ref = null;
-    this.rising = true; this.mx = -1e9; this.mxT = 0; this.mxV = false; this.mn = 1e9; this.last = -1e9;
+    this.s = null; this.floor = null; this.voice = null; this.vrun = 0;
+    this.rising = true; this.mx = -1e9; this.mxT = 0; this.mxRun = 0; this.mn = 1e9; this.last = -1e9;
   }
-  push(x, out) {
+  setOptions(opt) { Object.assign(this, opt); }
+  push(x, out, rej) {
     for (let i = 0; i < x.length; i++) {
       const v = x[i];
       this.acc += v * v;
       if (++this.dc === this.D) { this.dc = 0; this.ring[this.ri] = v; this.ri = (this.ri + 1) % 240; }
-      if (++this.n === this.hop) this.frame(out);
+      if (++this.n === this.hop) this.frame(out, rej);
     }
   }
-  voiced() {
-    const N = 240, r = this.ring, o = this.ri; let e = 0;
-    const x = this.buf || (this.buf = new Float32Array(N));
+  // 1 = voiced like a human voice (80-400 Hz), 0 = not periodic, -1 = a pure tone (clink, beep, squeak)
+  voicing() {
+    const N = 240, r = this.ring, o = this.ri, x = this.buf; let e = 0;
     for (let i = 0; i < N; i++) { x[i] = r[(o + i) % N]; e += x[i] * x[i]; }
-    if (e < 1e-9) return false;
-    let best = 0;
-    for (let l = 20; l <= 100; l++) {               // 80-400 Hz
-      let c = 0, a = 0, b = 0;
-      for (let i = 0; i + l < N; i++) { c += x[i] * x[i + l]; a += x[i] * x[i]; b += x[i + l] * x[i + l]; }
-      const v = c / Math.sqrt(a * b + 1e-12);
-      if (v > best) best = v;
-    }
-    return best > 0.5;
+    if (e < 1e-9) return 0;
+    const corr = l => { let c = 0, a = 0, b = 0; for (let i = 0; i + l < N; i++) { c += x[i] * x[i + l]; a += x[i] * x[i]; b += x[i + l] * x[i + l]; } return c / Math.sqrt(a * b + 1e-12); };
+    let best = 0, bestL = 0;
+    for (let l = 20; l <= 100; l++) { const v = corr(l); if (v > best) { best = v; bestL = l; } }
+    if (best < 0.5) return 0;
+    // a tone above the voice range repeats at a shorter lag too, and almost perfectly
+    let short = 0;
+    for (let l = 3; l < 20; l++) { const v = corr(l); if (v > short) short = v; }
+    if (short > 0.85 && short >= best - 0.03) return -1;
+    // a low steady tone (hum, whistle) is near-perfectly periodic and smooth from sample to sample; a voice is rougher
+    if (best > 0.98 && corr(3) > 0.8) return -1;
+    return 1;
   }
-  frame(out) {
+  frame(out, rej) {
     const db = 10 * Math.log10(this.acc / this.n + 1e-12);
     this.acc = 0; this.n = 0; this.t++;
-    if (this.s === null) { this.s = this.floor = this.ref = db; return; }
+    if (this.s === null) { this.s = this.floor = db; return; }
     this.s += 0.5 * (db - this.s);
     const s = this.s;
     this.floor += (s - this.floor) * (s < this.floor ? 0.3 : 0.0005);
-    this.ref = s > this.ref ? s : this.ref - 0.02;
-    const thr = Math.max(this.floor + 10, this.ref - 20), DIP = 2;
+    if (this.voice !== null) this.voice -= 0.002;   // forget your loudness slowly (0.2 dB a second)
+    const vc = this.voicing();
+    this.vrun = vc === 1 ? this.vrun + 1 : 0;
     this.level = s - this.floor;
+    const DIP = 2;
     if (this.rising) {
-      if (s > this.mx) { this.mx = s; this.mxT = this.t; this.mxV = this.voiced(); }
-      else if (s < this.mx - DIP) {
-        if (this.mx > thr && this.mxV && this.mxT - this.last >= 8) { this.last = this.mxT; out.push(this.mxT); }
+      // voicing must hold at the loudest moment itself, so a knock landing on faint background speech doesn't count
+      if (s > this.mx) { this.mx = s; this.mxT = this.t; this.mxAt = this.vrun; }
+      if (this.vrun > this.mxRun) this.mxRun = this.vrun;
+      if (s < this.mx - DIP) {
+        const loud = this.mx > this.floor + this.floorMargin;
+        const near = this.voice === null || this.mx > this.voice - this.refMargin;
+        if (loud && this.mxT - this.last >= 8) {
+          if (this.mxRun >= this.minVoiced && this.mxAt > 0 && near) {
+            this.last = this.mxT; out.push(this.mxT);
+            // your typical loudness: follows louder syllables quickly, quieter ones only slowly
+            this.voice = this.voice === null ? this.mx : this.voice + (this.mx > this.voice ? 0.3 : 0.03) * (this.mx - this.voice);
+          } else if (rej) rej.push(this.mxT);
+        }
         this.rising = false; this.mn = s;
       }
     } else {
       if (s < this.mn) this.mn = s;
-      else if (s > this.mn + DIP) { this.rising = true; this.mx = s; this.mxT = this.t; this.mxV = this.voiced(); }
+      else if (s > this.mn + DIP) { this.rising = true; this.mx = s; this.mxT = this.t; this.mxRun = this.mxAt = this.vrun; }
     }
   }
 }
 registerProcessor('syllables', class extends AudioWorkletProcessor {
-  constructor() { super(); this.d = new SyllableDetector(sampleRate); this.out = []; this.f = 0; }
+  constructor() {
+    super(); this.d = new SyllableDetector(sampleRate); this.out = []; this.rej = []; this.f = 0;
+    this.port.onmessage = e => this.d.setOptions(e.data);
+  }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (ch) {
-      this.out.length = 0; this.d.push(ch, this.out);
+      this.out.length = 0; this.rej.length = 0; this.d.push(ch, this.out, this.rej);
       for (let i = 0; i < this.out.length; i++) this.port.postMessage({ syl: 1 });
+      for (let i = 0; i < this.rej.length; i++) this.port.postMessage({ rej: 1 });
       if (this.d.t - this.f >= 3) { this.f = this.d.t; this.port.postMessage({ level: this.d.level || 0 }); }
     }
     return true;
@@ -453,22 +486,37 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 
   // Every calibration run you keep is stored; the meter uses all the ones ticked, pooled (total bursts ÷ total syllables).
   const runs = () => store.get('calRuns', []);
+  const DET = 2;   // runs made with an earlier detector don't describe this one
+  const SENS_NAME = { strict: 'strict', normal: 'normal', sensitive: 'sensitive' };
+  // runs the meter uses: this detector, and the current filter setting if there are any for it
+  function runsInUse() {
+    const cur = runs().filter(x => x.det === DET && x.on !== false);
+    const same = cur.filter(x => (x.sens || 'normal') === settings.sens);
+    return { list: same.length ? same : cur, other: !same.length && cur.length > 0 };
+  }
   function pooled(list) {
     const on = list.filter(x => x.on !== false);
     const b = on.reduce((a, x) => a + x.bursts, 0), n = on.reduce((a, x) => a + x.syl, 0);
     return n ? { f: b / n, runs: on.length, syl: n, min: Math.min(...on.map(x => x.bursts / x.syl)), max: Math.max(...on.map(x => x.bursts / x.syl)) } : null;
   }
   function addRun(run) {
-    const list = runs(); list.push({ id: Date.now(), on: true, ...run }); store.set('calRuns', list); showCalib();
+    const list = runs(); list.push({ id: Date.now(), on: true, det: DET, sens: settings.sens, ...run }); store.set('calRuns', list); showCalib();
   }
   // detected bursts per real syllable; 1 until calibrated
-  const factor = () => { const p = pooled(runs()); if (p) return p.f; const v = store.get('factor', null); return v > 0.5 && v < 2 ? v : 1; };
+  const factor = () => { const p = pooled(runsInUse().list); return p ? p.f : 1; };
 
   async function getStream() {
-    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    // automatic gain would turn the microphone up whenever you pause, making distant voices as loud as yours
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
   }
 
-  async function openSound(str, onSyl, onLevel) {
+  // background filter: how loud above the room, how close to your own loudness, how long voiced a syllable must be
+  const SENS = {
+    strict: { floorMargin: 14, refMargin: 10, minVoiced: 4 },
+    normal: { floorMargin: 10, refMargin: 14, minVoiced: 3 },
+    sensitive: { floorMargin: 7, refMargin: 20, minVoiced: 2 }
+  };
+  async function openSound(str, onSyl, onLevel, onRej) {
     const ctx = new AudioContext();
     await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([DETECTOR], { type: 'application/javascript' })));
     const src = ctx.createMediaStreamSource(str);
@@ -478,24 +526,25 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const node = new AudioWorkletNode(ctx, 'syllables');
     const mute = new GainNode(ctx, { gain: 0 });
     src.connect(hp).connect(lp1).connect(lp2).connect(node).connect(mute).connect(ctx.destination);
-    node.port.onmessage = e => e.data.syl ? onSyl() : onLevel(e.data.level);
+    node.port.postMessage(SENS[settings.sens] || SENS.normal);
+    node.port.onmessage = e => e.data.syl ? onSyl() : e.data.rej ? onRej && onRej() : onLevel(e.data.level);
     await ctx.resume();
     return ctx;
   }
 
   function showCalib() {
-    const list = runs(), p = pooled(list), legacy = store.get('factor', null);
+    const list = runs(), use = runsInUse(), p = pooled(use.list), old = list.some(x => x.det !== DET);
     if (p) {
-      $('calibStatus').innerHTML = `Your calibration: <b>${p.f.toFixed(2)}</b> bursts per syllable, the average of ${p.runs} run${p.runs > 1 ? 's' : ''} (${p.syl} syllables${p.runs > 1 ? `; runs ranged ${p.min.toFixed(2)}–${p.max.toFixed(2)}` : ''}). The meter divides what it hears by this.${p.runs > 1 && p.max - p.min > 0.2 ? ' The runs disagree quite a lot, so a few more will steady the average.' : ''}`;
-    } else if (legacy > 0.5 && legacy < 2) {
-      $('calibStatus').textContent = `Using your earlier single calibration of ${legacy.toFixed(2)}. Runs you add below are averaged and replace it.`;
+      $('calibStatus').innerHTML = `Your calibration: <b>${p.f.toFixed(2)}</b> bursts per syllable, the average of ${p.runs} run${p.runs > 1 ? 's' : ''} (${p.syl} syllables${p.runs > 1 ? `; runs ranged ${p.min.toFixed(2)}–${p.max.toFixed(2)}` : ''}). The meter divides what it hears by this.${p.runs > 1 && p.max - p.min > 0.2 ? ' The runs disagree quite a lot, so a few more will steady the average.' : ''}${use.other ? ` None of your runs used the ${settings.sens} filter, so this uses runs made with another setting; add a few with this one.` : ''}${old ? ' Runs marked “old” were made before the background filter and are not used.' : ''}`;
+    } else if (old) {
+      $('calibStatus').textContent = 'The detector changed (it now filters background noise), so your earlier runs no longer apply and are marked “old”. Do a few new runs to recalibrate; until then every burst counts as one syllable.';
     } else {
       $('calibStatus').textContent = 'Not calibrated yet, so every burst counts as one syllable. Do a few runs with different texts and speeds, add each one, and the meter uses their average.';
     }
     $('runsWrap').hidden = !list.length;
     if (!list.length) return;
     const bySpeed = {};
-    list.filter(x => x.on !== false).forEach(x => { const k = x.mode === 'guide' ? x.rate.toFixed(1) : 'own'; (bySpeed[k] ||= []).push(x); });
+    use.list.forEach(x => { const k = x.mode === 'guide' ? x.rate.toFixed(1) : 'own'; (bySpeed[k] ||= []).push(x); });
     const t = $('runs');
     t.innerHTML = `<thead><tr><th>Use</th><th>Text</th><th>Speed</th><th>Heard</th><th>Ratio</th><th></th></tr></thead><tbody></tbody>
       <tfoot><tr><td></td><td colspan="3">Average</td><td class="num">${p ? p.f.toFixed(2) : '–'}</td><td></td></tr>
@@ -504,8 +553,10 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       const tr = document.createElement('tr'); tr.className = x.on === false ? 'off' : '';
       tr.innerHTML = `<td><input type="checkbox" aria-label="Use this run"></td><td></td><td class="num"></td><td class="num"></td><td class="num"></td><td><button type="button" class="x" aria-label="Delete this run">×</button></td>`;
       const [c0, c1, c2, c3, c4] = tr.children;
-      c0.firstChild.checked = x.on !== false;
-      c1.textContent = textById(x.text).label.split(': ')[1];
+      const isOld = x.det !== DET;
+      c0.firstChild.checked = x.on !== false && !isOld; c0.firstChild.disabled = isOld;
+      if (isOld || !use.list.includes(x)) tr.className = 'off';
+      c1.textContent = textById(x.text).label.split(': ')[1] + (isOld ? ' (old)' : (x.sens || 'normal') !== 'normal' ? ` (${x.sens})` : '');
       c2.textContent = (x.mode === 'guide' ? '' : '~') + x.rate.toFixed(1);
       c3.textContent = x.hits != null ? Math.round(x.hits / x.syl * 100) + '%' : '–';
       c4.innerHTML = `${(x.bursts / x.syl).toFixed(2)}<small>${x.bursts} ÷ ${x.syl}</small>`;
@@ -529,7 +580,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('calTime').textContent = secs.toFixed(1) + ' s';
     $('calSyl').textContent = cal.n;
     $('calRate').textContent = cal.n > 2 && cal.last > cal.first ? (cal.n / ((cal.last - cal.first) / 1000)).toFixed(1) : '–';
-    [cal.levels, cal.ticks] = drawStrip($('calibVoice'), cal.levels, cal.ticks, now);
+    [cal.levels, cal.ticks, cal.rejs] = drawStrip($('calibVoice'), cal.levels, cal.ticks, now, cal.rejs);
     cal.raf = requestAnimationFrame(calReadout);
   }
   function closeCal() {
@@ -580,12 +631,12 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('calibStart').disabled = true; $('calibResult').hidden = true; resetCalReadout();
     try {
       const str = await getStream();
-      const c = { str, n: 0, t0: 0, first: 0, last: 0, levels: [], ticks: [], raf: 0 };
+      const c = { str, n: 0, t0: 0, first: 0, last: 0, levels: [], ticks: [], rejs: [], raf: 0 };
       c.ctx = await openSound(str, () => {
         const t = performance.now();
         if (!c.n) c.first = t;
         c.n++; c.last = t; c.ticks.push(t);
-      }, l => c.levels.push({ t: performance.now(), l }));
+      }, l => c.levels.push({ t: performance.now(), l }), () => c.rejs.push(performance.now()));
       c.t0 = performance.now(); cal = c;
       $('calibStart').textContent = 'Stop'; $('go').disabled = true;
       calReadout();
@@ -632,7 +683,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const p = passage(), B = c.n, K = p.syl, f = factor(), C = B / f;
     const err = (C - K) / K, raw = (B - K) / K;
     const secs = B > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
-    const used = runs().filter(x => x.on !== false && x.text === p.id).length;
+    const used = runsInUse().list.filter(x => x.text === p.id).length;
     const pct = v => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(1)}%`;
     const box = $('calibResult'); box.hidden = false;
     const plausible = B / K >= 0.5 && B / K <= 2;
@@ -649,12 +700,12 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       <p>${!plausible ? '<span class="warn">The count is too far off to be a fair test; something other than your reading was probably picked up, or much of it was missed.</span>'
         : Math.abs(err) <= 0.05 ? `The calibrated count is within 5% of the true count${Math.abs(err) < Math.abs(raw) ? ', and closer than without calibration' : ''}.`
         : `The calibrated count is ${Math.abs(err * 100).toFixed(0)}% ${err > 0 ? 'over' : 'under'} the true count${Math.abs(err) < Math.abs(raw) ? ', though still closer than without calibration' : Math.abs(err) > Math.abs(raw) ? ', and further off than without calibration' : ''}.`}
-      ${f === 1 && !runs().length ? ' You have no calibration runs yet, so this shows the detector on its own.' : ''}
+      ${f === 1 && !runsInUse().list.length ? ' You have no calibration runs yet, so this shows the detector on its own.' : ''}
       ${used ? ` This text is in ${used} of your calibration runs, so this isn't an independent check.` : ''}
       This only holds if you read every word once, without restarting or adding words.</p>
       <div class="row">${plausible ? '<button type="button" class="primary" id="checkSave">Save this check</button>' : ''}<button type="button" id="calibNext">Next text</button><button type="button" id="calibRetry">Try again</button></div>`;
     if (plausible) $('checkSave').onclick = () => {
-      const l = checks(); l.push({ id: Date.now(), text: p.id, known: K, bursts: B, f, secs, used: used > 0 }); store.set('calChecks', l);
+      const l = checks(); l.push({ id: Date.now(), text: p.id, known: K, bursts: B, f, secs, used: used > 0, det: DET, sens: settings.sens }); store.set('calChecks', l);
       showChecks(); $('checkSave').disabled = true; $('checkSave').textContent = 'Saved';
     };
     $('calibNext').onclick = nextText;
@@ -673,7 +724,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     l.forEach((x, i) => {
       const tr = document.createElement('tr');
       tr.innerHTML = `<td></td><td class="num">${x.known}</td><td class="num">${(x.bursts / x.f).toFixed(1)}<small>${x.bursts} ÷ ${x.f.toFixed(2)}</small></td><td class="num">${(errs[i] * 100).toFixed(1)}%<small>raw ${(raws[i] * 100).toFixed(1)}%</small></td><td><button type="button" class="x" aria-label="Delete this check">×</button></td>`;
-      tr.firstChild.textContent = textById(x.text).label.split(': ')[1] + (x.used ? ' *' : '');
+      tr.firstChild.textContent = textById(x.text).label.split(': ')[1] + (x.det !== DET ? ' (old)' : '') + (x.used ? ' *' : '');
       tr.querySelector('.x').onclick = () => { store.set('calChecks', checks().filter(y => y.id !== x.id)); showChecks(); };
       t.tBodies[0].append(tr);
     });
@@ -757,9 +808,9 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const plan = buildGuide();
     try {
       const str = await getStream();
-      const g = { ...plan, str, t0: 0, bursts: [], levels: [], ticks: [], raf: 0, done: 0 };
+      const g = { ...plan, str, t0: 0, bursts: [], levels: [], ticks: [], rejs: [], raf: 0, done: 0 };
       g.ctx = await openSound(str, () => { const t = performance.now(); g.ticks.push(t); if (g.t0) g.bursts.push(t - g.t0); },
-                              l => g.levels.push({ t: performance.now(), l }));
+                              l => g.levels.push({ t: performance.now(), l }), () => g.rejs.push(performance.now()));
       g.t0 = performance.now() + 3000;
       guide = g;
       $('guideStart').textContent = 'Stop'; $('go').disabled = true; $('guideRate').disabled = true;
@@ -770,7 +821,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   function runGuide() {
     const g = guide; if (!g) return;
     const now = performance.now(), el = now - g.t0;
-    [g.levels, g.ticks] = drawStrip($('guideVoice'), g.levels, g.ticks, now);
+    [g.levels, g.ticks, g.rejs] = drawStrip($('guideVoice'), g.levels, g.ticks, now, g.rejs);
     if (el < 0) {
       $('guideStatus').textContent = `Starting in ${Math.ceil(-el / 1000)}…`;
       g.bursts.length = 0;
@@ -835,7 +886,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   let trace = [];             // {t, sps}
   let lastBuzz = 0;
   let stream = null, recorder = null, chunks = [];   // the session's audio recording
-  let sound = null, bursts = 0, f = 1, levels = [], ticks = [], raf = 0;
+  let sound = null, bursts = 0, f = 1, levels = [], ticks = [], rejs = [], raf = 0;
   const syllables = () => bursts / f;
 
   function tick() {
@@ -906,22 +957,24 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   }
 
   // last 6 seconds of loudness, with a tick per syllable; returns the points still on screen
-  function drawStrip(c, lv, tk, now) {
+  function drawStrip(c, lv, tk, now, rj = []) {
     const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
     if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
     const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
     const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
     const span = 6000, x = t => w - (now - t) / span * w;
-    lv = lv.filter(p => now - p.t < span); tk = tk.filter(t => now - t < span);
+    lv = lv.filter(p => now - p.t < span); tk = tk.filter(t => now - t < span); rj = rj.filter(t => now - t < span);
     g.fillStyle = col('--muted'); g.globalAlpha = .35; g.beginPath(); g.moveTo(w, h);
     for (let i = lv.length - 1; i >= 0; i--) g.lineTo(x(lv[i].t), h - Math.max(0, Math.min(1, lv[i].l / 50)) * (h - 14));
     g.lineTo(lv.length ? x(lv[0].t) : w, h); g.fill(); g.globalAlpha = 1;
     g.fillStyle = col('--accent');
     for (const t of tk) g.fillRect(x(t) - 1.5, 0, 3, 10);
-    return [lv, tk];
+    g.fillStyle = col('--muted');
+    for (const t of rj) g.fillRect(x(t) - 1, 3, 2, 5);   // sounds the filter ignored
+    return [lv, tk, rj];
   }
   function drawVoice() {
-    [levels, ticks] = drawStrip($('voice'), levels, ticks, clock());
+    [levels, ticks, rejs] = drawStrip($('voice'), levels, ticks, clock(), rejs);
     if (running) raf = requestAnimationFrame(drawVoice);
   }
 
@@ -935,13 +988,13 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 
   async function start() {
     $('err').hidden = true;
-    events = []; trace = []; bursts = 0; f = factor(); levels = []; ticks = [];
+    events = []; trace = []; bursts = 0; f = factor(); levels = []; ticks = []; rejs = [];
     pausedTotal = 0; paused = false;
     $('go').disabled = true;
     try {
       stream = await getStream();
       if (settings.record) startRecorder();
-      sound = await openSound(stream, onSyllable, l => levels.push({ t: clock(), l }));
+      sound = await openSound(stream, onSyllable, l => levels.push({ t: clock(), l }), () => running && rejs.push(clock()));
     } catch (e) {
       $('go').disabled = false; dropRecording();
       showErr(e.name === 'NotAllowedError' ? 'Microphone access was blocked. Tap the lock icon in the address bar, allow the microphone, then tap Start again.'
