@@ -206,8 +206,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
         <div class="label">Calibrate to your voice</div>
         <p class="note" id="calibStatus"></p>
         <div class="runs-wrap" id="runsWrap" hidden><table class="runs" id="runs"></table></div>
+        <p class="note" id="checkStatus" hidden></p>
+        <div class="runs-wrap" id="checksWrap" hidden><table class="runs" id="checks"></table></div>
         <div class="row"><label>Text to read <select id="ctext"></select></label></div>
-        <div class="row"><button type="button" id="guideOpen">Read along with a guide</button><button type="button" id="calibOpen">Read at my own pace</button></div>
+        <div class="row"><button type="button" id="guideOpen">Read along with a guide</button><button type="button" id="calibOpen">Read at my own pace</button><button type="button" id="checkOpen">Check my calibration</button></div>
         <div id="guidePanel" class="calib-panel" hidden>
           <p class="note"><b>Read along.</b> A marker moves through the text one syllable at a time. Say each syllable as the marker reaches it. As you go, each syllable turns green if the meter heard it and red if it didn't, so you can see exactly what it picks up.</p>
           <div class="row">
@@ -233,8 +235,8 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
           <div class="calib-result" id="guideResult" hidden></div>
         </div>
         <div id="calibPanel" class="calib-panel" hidden>
-          <p class="note"><b>How it works.</b> The meter finds syllables by listening for bursts of loudness: every vowel sound makes one, and each burst is a tick. Some voices and microphones blur two syllables into one burst, or split one into two. Reading a passage with a known number of syllables shows how far off the detector is for you, and the meter corrects for it from then on.</p>
-          <p class="note">Tap Start, read the text aloud at your normal pace, then tap Stop.</p>
+          <p class="note" id="calibHow"><b>How it works.</b> The meter finds syllables by listening for bursts of loudness: every vowel sound makes one, and each burst is a tick. Some voices and microphones blur two syllables into one burst, or split one into two. Reading a passage with a known number of syllables shows how far off the detector is for you, and the meter corrects for it from then on.</p>
+          <p class="note" id="calibDo">Tap Start, read the text aloud at your normal pace, then tap Stop.</p>
           <p class="passage" id="passage"></p>
           <canvas id="calibVoice" aria-label="Loudness of your voice while calibrating, with a tick for each syllable"></canvas>
           <div class="stats">
@@ -248,7 +250,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 28 Oct 2026, averaged calibration</p>
+  <p class="note version">Version: 28 Oct 2026, calibration check</p>
 </main>
 
 <script>
@@ -437,7 +439,12 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     { id: 'en-pace', label: 'English: speaking pace', s: 'Good mor-ning ev-ery-one. To-day I want to talk a-bout why the pace of your speech mat-ters so much. When we speak too quick-ly, lis-ten-ers strug-gle to keep up, and the im-por-tant points get lost. When we speak too slow-ly, peo-ple drift a-way and stop pay-ing at-ten-tion. The goal is a stead-y, nat-u-ral rhy-thm with clear paus-es be-tween i-de-as.' },
     { id: 'en-phil', label: 'English: philosophy', s: 'Phi-los-o-phers have long ar-gued a-bout wheth-er our knowl-edge of the ex-ter-nal world can ev-er be jus-ti-fied. The scep-tic in-sists that ev-ery ex-pe-ri-ence we have is com-pat-i-ble with our be-ing sys-tem-at-i-cal-ly de-ceived. Re-spond-ing to this chal-lenge re-quires us to think care-ful-ly a-bout what jus-ti-fi-ca-tion ac-tu-al-ly de-mands.' },
     { id: 'en-story', label: 'English: holiday story', s: 'Last sum-mer we rent-ed a small cot-tage by the sea. Ev-ery morn-ing I walked a-long the beach be-fore break-fast, watch-ing the fish-ing boats come back in. In the af-ter-noons we read, swam, and ar-gued a-bout noth-ing in par-tic-u-lar. It was the qui-et-est hol-i-day I can re-mem-ber.' },
+    { id: 'en-mind', label: 'English: mind and consciousness', s: 'How can a phys-i-cal brain give rise to con-scious ex-pe-ri-ence? This ques-tion, which phi-los-o-phers call the hard prob-lem, re-mains un-re-solved. Some ar-gue that con-scious-ness is sim-ply what cer-tain neu-ral pro-cess-es are like from the in-side. Oth-ers in-sist that no a-mount of phys-i-cal de-scrip-tion could ev-er ex-plain why it feels like an-y-thing at all.' },
+    { id: 'en-free', label: 'English: free will', s: 'If ev-ery e-vent is caused by ear-li-er e-vents, then our choic-es seem to be fixed long be-fore we make them. Com-pat-i-bil-ists re-ply that free-dom does not re-quire an ab-sence of cau-ses, on-ly the right kind of cau-ses: ac-tions that flow from our own rea-sons and de-sires, rath-er than from co-er-cion or com-pul-sion.' },
+    { id: 'en-ethics', label: 'English: ethics', s: 'Con-se-quen-tial-ists judge an ac-tion by its out-comes a-lone. Kant-i-ans re-ply that some acts are wrong what-ev-er their re-sults, be-cause they treat a per-son mere-ly as a means. Vir-tue the-o-rists ask a dif-fer-ent ques-tion al-to-geth-er: not what should I do, but what kind of per-son should I be-come?' },
+    { id: 'en-lang', label: 'English: meaning and reference', s: 'What does it mean for a word to re-fer to some-thing in the world? On one view, a name sim-ply picks out its bear-er, with no fur-ther de-scrip-tive con-tent. Yet this makes it hard to ex-plain how some-one could sin-cere-ly be-lieve that Her-cu-les was strong while de-ny-ing that Her-a-cles was, if both names re-fer to the same he-ro.' },
     { id: 'de-pace', label: 'Deutsch: Sprechtempo', s: 'Gu-ten Mor-gen zu-sam-men. Heu-te möch-te ich da-rü-ber spre-chen, wa-rum das Tem-po beim Spre-chen so wich-tig ist. Wenn wir zu schnell spre-chen, kom-men die Zu-hö-rer nicht mit, und die wich-ti-gen Punk-te ge-hen ver-lo-ren. Wenn wir zu lang-sam spre-chen, schwei-fen die Leu-te ab und hö-ren nicht mehr zu. Das Ziel ist ein ru-hi-ger, na-tür-li-cher Rhyth-mus mit kla-ren Pau-sen zwi-schen den Ge-dan-ken.' },
+    { id: 'de-kant', label: 'Deutsch: Kant', s: 'Kant un-ter-schei-det zwi-schen dem, was wir er-ken-nen kön-nen, und dem, was wir nur den-ken dür-fen. Die Din-ge an sich blei-ben uns ver-bor-gen; wir ken-nen sie nur so, wie sie uns er-schei-nen.' },
     { id: 'de-phil', label: 'Deutsch: Philosophie', s: 'Die Phi-lo-so-phie fragt seit je-her, wo-rauf sich un-ser Wis-sen ei-gent-lich stützt. Kön-nen wir si-cher sein, dass die Welt so ist, wie sie uns er-scheint? Die-se Fra-ge klingt ein-fach, a-ber ih-re Be-ant-wor-tung ver-langt ge-nau-e Be-griffs-ar-beit.' }
   ].map(t => ({ ...t, text: t.s.replace(/-/g, ''), syl: t.s.split(/\s+/).reduce((n, w) => n + w.split('-').length, 0) }));
   const textById = id => TEXTS.find(t => t.id === id) || TEXTS[0];
@@ -537,13 +544,27 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('calTime').textContent = '0.0 s'; $('calSyl').textContent = '0'; $('calRate').textContent = '–';
     drawStrip($('calibVoice'), [], [], 0);
   }
+  let calMode = 'calibrate';
+  const CAL_HOW = $('calibHow').innerHTML, CAL_DO = $('calibDo').textContent;
+  $('checkOpen').addEventListener('click', () => {
+    calMode = 'check';
+    $('calibHow').innerHTML = '<b>Check your calibration.</b> Read a text at your own pace. The meter counts the bursts it hears, divides by your calibration, and compares the result with the number of syllables the text really has. If the calibration works, the two should match. A text you haven\'t used for calibration makes the fairest test.';
+    $('calibDo').textContent = 'Tap Start, read the whole text once at your normal pace, then tap Stop.';
+    openOwnPace();
+  });
   $('calibOpen').addEventListener('click', () => {
+    calMode = 'calibrate';
+    $('calibHow').innerHTML = CAL_HOW; $('calibDo').textContent = CAL_DO;
+    openOwnPace();
+  });
+  function openOwnPace() {
     if (running || paused) { $('calibStatus').textContent = 'Stop the current session first, then calibrate.'; return; }
     $('passage').textContent = passage().text;
     $('calibResult').hidden = true;
     $('calibPanel').hidden = false; $('guidePanel').hidden = true; closeGuide();
     resetCalReadout();
-  });
+    $('calibPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
   $('ctext').addEventListener('change', () => {
     settings.text = $('ctext').value; store.set('ctext', settings.text);
     $('passage').textContent = passage().text;
@@ -577,6 +598,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   });
 
   function showCalResult(c) {
+    if (calMode === 'check') return showCheckResult(c);
     const p = passage(), n = c.n, f = n / p.syl;
     // reading time runs from the first burst to the last, so a late tap on Stop doesn't count
     const secs = n > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
@@ -602,6 +624,60 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       $('calibNext').onclick = nextText;
     }
     $('calibRetry').onclick = () => { box.hidden = true; resetCalReadout(); };
+  }
+
+  // Validation: read a text unpaced; the calibrated count should come out at the text's known syllable count
+  const checks = () => store.get('calChecks', []);
+  function showCheckResult(c) {
+    const p = passage(), B = c.n, K = p.syl, f = factor(), C = B / f;
+    const err = (C - K) / K, raw = (B - K) / K;
+    const secs = B > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
+    const used = runs().filter(x => x.on !== false && x.text === p.id).length;
+    const pct = v => `${v >= 0 ? '+' : '−'}${Math.abs(v * 100).toFixed(1)}%`;
+    const box = $('calibResult'); box.hidden = false;
+    const plausible = B / K >= 0.5 && B / K <= 2;
+    box.innerHTML = `
+      <dl>
+        <dt>Syllables in the text</dt><dd>${K}</dd>
+        <dt>Bursts the detector heard</dt><dd>${B}</dd>
+        <dt>Your calibration</dt><dd>${f.toFixed(2)}</dd>
+        <dt class="key">Calibrated count</dt><dd class="key">${B} ÷ ${f.toFixed(2)} = ${C.toFixed(1)}</dd>
+        <dt>Difference from the text</dt><dd>${(C - K >= 0 ? '+' : '−') + Math.abs(C - K).toFixed(1)} (${pct(err)})</dd>
+        <dt>Without calibration</dt><dd>${B} (${pct(raw)})</dd>
+        <dt>Your pace: true / as measured</dt><dd>${(K / secs).toFixed(2)} / ${(C / secs).toFixed(2)} syl/s</dd>
+      </dl>
+      <p>${!plausible ? '<span class="warn">The count is too far off to be a fair test; something other than your reading was probably picked up, or much of it was missed.</span>'
+        : Math.abs(err) <= 0.05 ? `The calibrated count is within 5% of the true count${Math.abs(err) < Math.abs(raw) ? ', and closer than without calibration' : ''}.`
+        : `The calibrated count is ${Math.abs(err * 100).toFixed(0)}% ${err > 0 ? 'over' : 'under'} the true count${Math.abs(err) < Math.abs(raw) ? ', though still closer than without calibration' : Math.abs(err) > Math.abs(raw) ? ', and further off than without calibration' : ''}.`}
+      ${f === 1 && !runs().length ? ' You have no calibration runs yet, so this shows the detector on its own.' : ''}
+      ${used ? ` This text is in ${used} of your calibration runs, so this isn't an independent check.` : ''}
+      This only holds if you read every word once, without restarting or adding words.</p>
+      <div class="row">${plausible ? '<button type="button" class="primary" id="checkSave">Save this check</button>' : ''}<button type="button" id="calibNext">Next text</button><button type="button" id="calibRetry">Try again</button></div>`;
+    if (plausible) $('checkSave').onclick = () => {
+      const l = checks(); l.push({ id: Date.now(), text: p.id, known: K, bursts: B, f, secs, used: used > 0 }); store.set('calChecks', l);
+      showChecks(); $('checkSave').disabled = true; $('checkSave').textContent = 'Saved';
+    };
+    $('calibNext').onclick = nextText;
+    $('calibRetry').onclick = () => { box.hidden = true; resetCalReadout(); };
+  }
+  function showChecks() {
+    const l = checks();
+    $('checksWrap').hidden = $('checkStatus').hidden = !l.length;
+    if (!l.length) return;
+    const errs = l.map(x => (x.bursts / x.f - x.known) / x.known), raws = l.map(x => (x.bursts - x.known) / x.known);
+    const mae = a => a.reduce((s, v) => s + Math.abs(v), 0) / a.length * 100;
+    const indep = l.filter(x => !x.used);
+    $('checkStatus').innerHTML = `<b>Checks:</b> on average the calibrated count was off by <b>${mae(errs).toFixed(1)}%</b> (${mae(raws).toFixed(1)}% without calibration), over ${l.length} check${l.length > 1 ? 's' : ''}${indep.length < l.length ? `; ${indep.length ? `only ${indep.length}` : 'none'} used a text you hadn't calibrated with` : ''}. Each check uses the calibration you had when you made it.`;
+    const t = $('checks');
+    t.innerHTML = `<thead><tr><th>Text</th><th>True</th><th>Calibrated</th><th>Error</th><th></th></tr></thead><tbody></tbody>`;
+    l.forEach((x, i) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td></td><td class="num">${x.known}</td><td class="num">${(x.bursts / x.f).toFixed(1)}<small>${x.bursts} ÷ ${x.f.toFixed(2)}</small></td><td class="num">${(errs[i] * 100).toFixed(1)}%<small>raw ${(raws[i] * 100).toFixed(1)}%</small></td><td><button type="button" class="x" aria-label="Delete this check">×</button></td>`;
+      tr.firstChild.textContent = textById(x.text).label.split(': ')[1] + (x.used ? ' *' : '');
+      tr.querySelector('.x').onclick = () => { store.set('calChecks', checks().filter(y => y.id !== x.id)); showChecks(); };
+      t.tBodies[0].append(tr);
+    });
+    if (indep.length < l.length) t.insertAdjacentHTML('beforeend', '<tfoot><tr class="by"><td colspan="5">* text also used for calibration</td></tr></tfoot>');
   }
 
   // Guided calibration: a marker steps through the text at a set rate; each syllable is checked against what the detector heard.
@@ -979,7 +1055,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (document.visibilityState === 'visible' && running) { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} }
   });
   window.addEventListener('resize', drawTrace);
-  drawScale(); showCalib();
+  drawScale(); showCalib(); showChecks();
 })();
 </script>
 </body>
