@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14181f">
+<title>Pace Meter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: one column, big live number on top, pace band, controls, session stats and trace below */
+:root {
+  --bg: #f3f4f1; --surface: #ffffff; --fg: #1d2420; --muted: #5d6862; --line: #d9ddd6;
+  --slow: #3f73b8; --good: #2e8a57; --fast: #c8502f; --accent: #2e8a57;
+  --display: "Fraunces", Georgia, serif;
+  --body: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14181f; --surface: #1c222b; --fg: #e8ebe6; --muted: #98a29c; --line: #2d3540;
+    --slow: #78a6e6; --good: #5cc48a; --fast: #ef8565; --accent: #5cc48a; color-scheme: dark; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); font: 16px/1.5 var(--body);
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 520px; margin: 0 auto; display: grid; gap: 20px; padding-block: 20px; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+h1 { font: 600 1.4rem/1.2 var(--display); margin: 0; }
+.status { font-size: .85rem; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+.listening .dot { background: var(--fast); animation: pulse 1.4s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .listening .dot { animation: none; } }
+
+.readout { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px 20px 18px; display: grid; gap: 14px; }
+.big { display: flex; align-items: baseline; gap: 10px; }
+#wpm { font: 600 clamp(4.5rem, 24vw, 7rem)/1 var(--display); font-variant-numeric: tabular-nums; color: var(--state, var(--fg)); transition: color .3s; }
+.unit { font-size: 1rem; color: var(--muted); }
+#verdict { font-weight: 600; font-size: 1.1rem; color: var(--state, var(--muted)); min-height: 1.5em; }
+
+.band { position: relative; height: 14px; border-radius: 7px; overflow: hidden; display: flex; }
+.band span { height: 100%; }
+.band .s { background: color-mix(in srgb, var(--slow) 35%, transparent); }
+.band .g { background: color-mix(in srgb, var(--good) 45%, transparent); }
+.band .f { background: color-mix(in srgb, var(--fast) 35%, transparent); }
+.bandwrap { position: relative; padding-top: 4px; }
+#marker { position: absolute; top: 0; width: 4px; height: 22px; margin-left: -2px; border-radius: 2px; background: var(--fg); transition: left .4s ease; left: 0; }
+.scale { display: flex; justify-content: space-between; font: 500 .75rem var(--mono); color: var(--muted); position: relative; height: 1.2em; }
+.scale span { position: absolute; transform: translateX(-50%); }
+
+button.go { font: 600 1.15rem var(--body); width: 100%; padding: 18px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; cursor: pointer; }
+button.go.stop { background: var(--fg); color: var(--bg); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--slow); outline-offset: 2px; }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.stats div { background: var(--surface); padding: 12px; display: grid; gap: 2px; }
+.stats b { font: 500 1.35rem var(--mono); font-variant-numeric: tabular-nums; }
+.stats small, .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+canvas { width: 100%; height: 110px; display: block; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+
+.transcript { font-size: .92rem; color: var(--muted); max-height: 7.5em; overflow-y: auto; overflow-wrap: anywhere; }
+.transcript i { color: var(--fg); font-style: normal; opacity: .6; }
+
+details { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+summary { cursor: pointer; font-weight: 600; }
+.settings { display: grid; gap: 14px; padding-top: 14px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.row label { display: grid; gap: 4px; flex: 1 1 120px; min-width: 0; }
+select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 100%; }
+.check { display: flex; align-items: center; gap: 10px; }
+.check input { width: 22px; height: 22px; accent-color: var(--accent); }
+.note { font-size: .82rem; color: var(--muted); margin: 0; }
+#err { color: var(--fast); font-weight: 500; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pace Meter</h1>
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Ready</span></div>
+  </header>
+
+  <section class="readout" aria-live="polite">
+    <div class="big"><span id="wpm">–</span><span class="unit">words / min<br><span id="windowNote">last 20 s</span></span></div>
+    <div id="verdict">Tap Start and begin speaking</div>
+    <div class="bandwrap">
+      <div class="band" id="band"><span class="s"></span><span class="g"></span><span class="f"></span></div>
+      <div id="marker"></div>
+    </div>
+    <div class="scale" id="scale"></div>
+  </section>
+
+  <p id="err" hidden></p>
+  <button class="go" id="go" type="button">Start</button>
+
+  <div class="stats">
+    <div><small>Session avg</small><b id="avg">–</b></div>
+    <div><small>Words</small><b id="words">0</b></div>
+    <div><small>Time</small><b id="time">0:00</b></div>
+  </div>
+
+  <div>
+    <div class="label" style="margin-bottom:6px">Pace over this session</div>
+    <canvas id="trace" aria-label="Words per minute over time"></canvas>
+  </div>
+
+  <div>
+    <div class="label" style="margin-bottom:6px">Heard</div>
+    <div class="transcript" id="transcript">Your words appear here as they are recognised.</div>
+  </div>
+
+  <details>
+    <summary>Settings</summary>
+    <div class="settings">
+      <div class="row">
+        <label>Language
+          <select id="lang">
+            <option value="en-GB">English (UK)</option>
+            <option value="en-US">English (US)</option>
+            <option value="de-DE">Deutsch</option>
+          </select>
+        </label>
+        <label>Averaging window
+          <select id="win">
+            <option value="10">10 s (twitchy)</option>
+            <option value="20" selected>20 s</option>
+            <option value="30">30 s</option>
+            <option value="60">60 s (smooth)</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Too slow below <input type="number" id="lo" value="120" min="40" max="300" step="5" inputmode="numeric"></label>
+        <label>Too fast above <input type="number" id="hi" value="160" min="60" max="320" step="5" inputmode="numeric"></label>
+      </div>
+      <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
+      <label class="check"><input type="checkbox" id="pauses" checked> Leave pauses out of the average</label>
+      <p class="note">Uses Chrome's built-in speech recognition, which on Android may send audio to Google to transcribe. Pace is only as accurate as the recognition; mumbled or very fast words can be missed. Keep the screen on while practising.</p>
+    </div>
+  </details>
+</main>
+
+<script>
+(() => {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const $ = id => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('pace.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('pace.' + k, JSON.stringify(v)); } catch {} }
+  };
+
+  // settings
+  const settings = { lang: store.get('lang', 'en-GB'), win: store.get('win', 20), lo: store.get('lo', 120), hi: store.get('hi', 160),
+                     buzz: store.get('buzz', true), pauses: store.get('pauses', true) };
+  $('lang').value = settings.lang; $('win').value = settings.win; $('lo').value = settings.lo; $('hi').value = settings.hi;
+  $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses;
+  for (const id of ['lang', 'win', 'lo', 'hi', 'buzz', 'pauses']) {
+    $(id).addEventListener('change', e => {
+      const el = e.target;
+      settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
+      if (settings.lo >= settings.hi) { settings.hi = settings.lo + 10; $('hi').value = settings.hi; }
+      store.set(id, settings[id]);
+      drawScale();
+      if (id === 'lang' && running) { rec.stop(); } // restarts with the new language on end
+    });
+  }
+
+  // scale for the band: 60..220 wpm
+  const MIN = 60, MAX = 220;
+  const pct = v => Math.max(0, Math.min(100, (v - MIN) / (MAX - MIN) * 100));
+  function drawScale() {
+    const [s, g, f] = $('band').children;
+    s.style.width = pct(settings.lo) + '%';
+    g.style.width = (pct(settings.hi) - pct(settings.lo)) + '%';
+    f.style.width = (100 - pct(settings.hi)) + '%';
+    $('scale').innerHTML = [MIN, settings.lo, settings.hi, MAX]
+      .map(v => `<span style="left:${pct(v)}%">${v}</span>`).join('');
+    $('scale').firstChild.style.transform = 'none';
+    $('scale').lastChild.style.transform = 'translateX(-100%)';
+    $('windowNote').textContent = `last ${settings.win} s`;
+  }
+  drawScale();
+
+  if (!SR) {
+    $('err').hidden = false;
+    $('err').textContent = 'This browser has no speech recognition. On Android, open this page in Chrome.';
+    $('go').disabled = true;
+    return;
+  }
+
+  // state
+  let rec = null, running = false, startedAt = 0, timer = null, wakeLock = null;
+  let doneWords = 0;          // words from recognition sessions that have ended
+  let sessionText = '';       // finalised text in the current recognition session
+  let sessionCount = 0;       // words counted so far in this session (final + interim)
+  let events = [];            // {t, n}: word count changes with timestamps
+  let lastWordAt = 0, speakingMs = 0, lastTick = 0;
+  let trace = [];             // {t, wpm}
+  let lastBuzz = 0, finalLog = '';
+
+  const words = s => (s.trim().match(/\S+/g) || []).length;
+  const norm = s => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  function newRec() {
+    const r = new SR();
+    r.lang = settings.lang; r.continuous = true; r.interimResults = true; r.maxAlternatives = 1;
+    r.onresult = onResult;
+    r.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        showErr('Microphone access was blocked. Tap the lock icon in the address bar, allow the microphone, then tap Start again.');
+        stop();
+      } else if (e.error === 'audio-capture') {
+        showErr('No microphone found, or another app is using it.'); stop();
+      } else if (e.error === 'network') {
+        showErr('Speech recognition needs an internet connection.');
+      }
+      // "no-speech" and "aborted" are routine; onend restarts
+    };
+    r.onend = () => {
+      doneWords += sessionCount; sessionText = ''; sessionCount = 0;
+      if (running) { try { r.lang = settings.lang; r.start(); } catch { setTimeout(() => running && rec.start(), 250); } }
+    };
+    return r;
+  }
+
+  // Android Chrome sometimes repeats earlier text in later results; merge so nothing is counted twice.
+  function onResult(e) {
+    let finalText = '', interim = '';
+    for (let i = 0; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        if (finalText && norm(t).startsWith(norm(finalText))) finalText = t;
+        else finalText = finalText ? finalText + ' ' + t : t;
+      } else {
+        interim = t;
+      }
+    }
+    if (interim && finalText && norm(interim).startsWith(norm(finalText))) interim = interim.slice(finalText.length);
+    if (finalText.length > sessionText.length) {
+      const added = finalText.slice(sessionText.length).trim();
+      if (added) finalLog = (finalLog + ' ' + added).slice(-600);
+      sessionText = finalText;
+    }
+    const count = words(finalText) + words(interim);
+    const delta = count - sessionCount;
+    if (delta !== 0) {
+      const now = performance.now();
+      events.push({ t: now, n: delta });
+      if (delta > 0) lastWordAt = now;
+      sessionCount = count;
+    }
+    $('transcript').innerHTML = '';
+    $('transcript').append(finalLog.trim() + ' ');
+    if (interim.trim()) { const i = document.createElement('i'); i.textContent = interim.trim(); $('transcript').append(i); }
+    $('transcript').scrollTop = 1e6;
+  }
+
+  function tick() {
+    const now = performance.now();
+    const dt = now - lastTick; lastTick = now;
+    if (now - lastWordAt < 2000) speakingMs += dt;   // speaking if a word arrived in the last 2 s
+    const W = settings.win * 1000;
+    events = events.filter(ev => now - ev.t < 5 * 60 * 1000);
+    const inWin = events.filter(ev => now - ev.t <= W).reduce((a, ev) => a + ev.n, 0);
+    const elapsed = now - startedAt;
+    const span = Math.min(W, elapsed);
+    const total = doneWords + sessionCount;
+    let wpm = null;
+    if (elapsed > 4000 && now - lastWordAt < W) wpm = Math.max(0, Math.round(inWin / (span / 60000)));
+    show(wpm);
+    const avgBase = settings.pauses ? speakingMs : elapsed;
+    $('avg').textContent = total > 5 && avgBase > 5000 ? Math.round(total / (avgBase / 60000)) : '–';
+    $('words').textContent = total;
+    const s = Math.floor(elapsed / 1000);
+    $('time').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    if (wpm !== null && (!trace.length || now - trace[trace.length - 1].t > 1000)) trace.push({ t: elapsed, wpm });
+    drawTrace();
+  }
+
+  function show(wpm) {
+    const readout = document.querySelector('.readout');
+    if (wpm === null) {
+      $('wpm').textContent = '–';
+      $('verdict').textContent = running ? (performance.now() - startedAt < 4000 ? 'Listening…' : 'Paused') : 'Tap Start and begin speaking';
+      readout.style.removeProperty('--state');
+      $('marker').style.opacity = .25;
+      return;
+    }
+    $('wpm').textContent = wpm;
+    $('marker').style.opacity = 1;
+    $('marker').style.left = pct(wpm) + '%';
+    let state, label;
+    if (wpm < settings.lo) { state = 'var(--slow)'; label = 'A bit slow'; }
+    else if (wpm > settings.hi) { state = 'var(--fast)'; label = 'Slow down'; }
+    else { state = 'var(--good)'; label = 'Good pace'; }
+    readout.style.setProperty('--state', state);
+    $('verdict').textContent = label;
+    if (wpm > settings.hi && settings.buzz && navigator.vibrate && performance.now() - lastBuzz > 6000) {
+      navigator.vibrate([120, 80, 120]); lastBuzz = performance.now();
+    }
+  }
+
+  function drawTrace() {
+    const c = $('trace'), dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+    const css = getComputedStyle(document.documentElement);
+    const col = n => css.getPropertyValue(n).trim();
+    const pad = 8, y = v => h - pad - (Math.max(MIN, Math.min(MAX, v)) - MIN) / (MAX - MIN) * (h - 2 * pad);
+    g.fillStyle = col('--good'); g.globalAlpha = .12;
+    g.fillRect(0, y(settings.hi), w, y(settings.lo) - y(settings.hi)); g.globalAlpha = 1;
+    g.fillStyle = col('--muted'); g.font = '11px ' + col('--mono');
+    g.fillText(settings.hi, 4, y(settings.hi) - 3); g.fillText(settings.lo, 4, y(settings.lo) + 12);
+    if (trace.length < 2) return;
+    const t1 = Math.max(trace[trace.length - 1].t, 60000);
+    const x = t => 30 + (t / t1) * (w - 36);
+    g.strokeStyle = col('--fg'); g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
+    trace.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.wpm)) : g.moveTo(x(p.t), y(p.wpm)));
+    g.stroke();
+    const last = trace[trace.length - 1];
+    g.fillStyle = last.wpm > settings.hi ? col('--fast') : last.wpm < settings.lo ? col('--slow') : col('--good');
+    g.beginPath(); g.arc(x(last.t), y(last.wpm), 4, 0, 7); g.fill();
+  }
+
+  function showErr(msg) { $('err').hidden = false; $('err').textContent = msg; }
+
+  async function start() {
+    $('err').hidden = true;
+    doneWords = 0; sessionText = ''; sessionCount = 0; events = []; trace = []; finalLog = '';
+    speakingMs = 0; lastWordAt = 0; startedAt = lastTick = performance.now();
+    $('transcript').textContent = '';
+    running = true;
+    rec = newRec();
+    try { rec.start(); } catch (e) { showErr('Could not start the microphone: ' + e.message); running = false; return; }
+    document.body.classList.add('listening');
+    $('statusText').textContent = 'Listening';
+    $('go').textContent = 'Stop'; $('go').classList.add('stop');
+    timer = setInterval(tick, 250);
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+
+  function stop() {
+    running = false;
+    if (rec) { try { rec.stop(); } catch {} }
+    clearInterval(timer); tick();
+    document.body.classList.remove('listening');
+    $('statusText').textContent = 'Stopped';
+    $('go').textContent = 'Start again'; $('go').classList.remove('stop');
+    $('verdict').textContent = trace.length ? 'Session finished' : 'Tap Start and begin speaking';
+    try { wakeLock?.release(); } catch {}
+    wakeLock = null;
+  }
+
+  $('go').addEventListener('click', () => running ? stop() : start());
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && running) { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} }
+  });
+  window.addEventListener('resize', drawTrace);
+  drawTrace();
+})();
+</script>
+</body>
+</html>
