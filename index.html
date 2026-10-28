@@ -24,6 +24,7 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+[hidden] { display: none !important; }
 body {
   background: var(--bg); color: var(--fg); font: 16px/1.5 var(--body);
   padding-top: env(safe-area-inset-top, 0px); padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
@@ -102,7 +103,16 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 .calib button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .calib .row { align-items: center; }
 .passage { font: 1.05rem/1.6 var(--body); margin: 0; padding: 12px 14px; background: var(--bg); border-radius: 8px; }
-#calibCount { font: 500 .9rem var(--mono); color: var(--muted); }
+.calib-panel { display: grid; gap: 12px; }
+.calib-panel .note b { color: var(--fg); }
+#calibVoice { height: 56px; }
+.calib-result { display: grid; gap: 8px; background: var(--bg); border-radius: 8px; padding: 12px 14px; }
+.calib-result dl { display: grid; grid-template-columns: 1fr auto; gap: 6px 12px; margin: 0; }
+.calib-result dt { color: var(--muted); font-size: .9rem; }
+.calib-result dd { margin: 0; font: 500 .95rem var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.calib-result .key { border-top: 1px solid var(--line); padding-top: 6px; color: var(--fg); font-weight: 600; }
+.calib-result p { margin: 0; font-size: .9rem; }
+.calib-result .warn { color: var(--fast); font-weight: 500; }
 </style>
 </head>
 <body>
@@ -193,11 +203,19 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       <div class="calib" id="calib">
         <div class="label">Calibrate to your voice</div>
         <p class="note" id="calibStatus"></p>
-        <div class="row"><button type="button" id="calibGo">Read a passage aloud</button></div>
-        <div id="calibPanel" hidden>
-          <p class="note" style="margin-bottom:8px">Read this at your normal pace, then tap Done.</p>
+        <div class="row"><button type="button" id="calibOpen">Calibrate</button></div>
+        <div id="calibPanel" class="calib-panel" hidden>
+          <p class="note"><b>How it works.</b> The meter doesn't hear words, only syllables: every vowel sound makes a short burst of loudness, and each burst is one tick. Reading a passage with a known number of words shows how many syllables you say per word. From then on, words per minute = syllables per minute ÷ that number.</p>
+          <p class="note">Tap Start, read the passage aloud at your normal speaking pace, then tap Stop.</p>
           <p class="passage" id="passage"></p>
-          <div class="row" style="margin-top:10px"><button type="button" class="primary" id="calibDone">Done</button><button type="button" id="calibCancel">Cancel</button><span id="calibCount"></span></div>
+          <canvas id="calibVoice" aria-label="Loudness of your voice while calibrating, with a tick for each syllable"></canvas>
+          <div class="stats">
+            <div><small>Time</small><b id="calTime">0.0 s</b></div>
+            <div><small>Syllables</small><b id="calSyl">0</b></div>
+            <div><small>Per second</small><b id="calRate">–</b></div>
+          </div>
+          <div class="row"><button type="button" class="primary" id="calibStart">Start</button><button type="button" id="calibClose">Close</button></div>
+          <div class="calib-result" id="calibResult" hidden></div>
         </div>
       </div>
     </div>
@@ -427,36 +445,91 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   }
 
   // calibration: read a known passage, count syllables, k = syllables / words
-  let calib = null;
-  $('calibGo').addEventListener('click', async () => {
-    if (running || paused) { $('calibStatus').textContent = 'Stop the current session first.'; return; }
+  let cal = null;
+  const passageWords = () => words(PASSAGES[langKey()] || PASSAGES.en);
+  function calReadout() {
+    if (!cal) return;
+    const now = performance.now(), secs = (now - cal.t0) / 1000;
+    $('calTime').textContent = secs.toFixed(1) + ' s';
+    $('calSyl').textContent = cal.n;
+    $('calRate').textContent = cal.n > 2 && cal.last > cal.first ? (cal.n / ((cal.last - cal.first) / 1000)).toFixed(1) : '–';
+    [cal.levels, cal.ticks] = drawStrip($('calibVoice'), cal.levels, cal.ticks, now);
+    cal.raf = requestAnimationFrame(calReadout);
+  }
+  function closeCal() {
+    if (!cal) return null;
+    cancelAnimationFrame(cal.raf);
+    cal.ctx.close().catch(() => {}); cal.str.getTracks().forEach(t => t.stop());
+    const c = cal; cal = null;
+    $('calibStart').textContent = 'Start'; $('go').disabled = false;
+    return c;
+  }
+  $('calibOpen').addEventListener('click', () => {
+    if (running || paused) { $('calibStatus').textContent = 'Stop the current session first, then calibrate.'; return; }
+    $('passage').textContent = PASSAGES[langKey()] || PASSAGES.en;
+    $('calTime').textContent = '0.0 s'; $('calSyl').textContent = '0'; $('calRate').textContent = '–';
+    $('calibResult').hidden = true;
+    $('calibPanel').hidden = false; $('calibOpen').hidden = true;
+    drawStrip($('calibVoice'), [], [], 0);
+  });
+  $('calibClose').addEventListener('click', () => {
+    closeCal();
+    $('calibPanel').hidden = true; $('calibOpen').hidden = false;
+  });
+  $('calibStart').addEventListener('click', async () => {
+    if (cal) { showCalResult(closeCal()); return; }
+    if (running || paused) return;
+    $('calibStart').disabled = true; $('calibResult').hidden = true;
     try {
       const str = await getStream();
-      let n = 0;
-      const ctx = await openSound(str, () => { n++; $('calibCount').textContent = `${n} syllables heard`; }, () => {});
-      calib = { str, ctx, count: () => n };
-    } catch (e) { $('calibStatus').textContent = 'Could not open the microphone: ' + e.message; return; }
-    $('passage').textContent = PASSAGES[langKey()] || PASSAGES.en;
-    $('calibCount').textContent = 'Listening…';
-    $('calibPanel').hidden = false; $('calibGo').hidden = true; $('go').disabled = true;
-  });
-  function endCalib() {
-    if (!calib) return;
-    calib.ctx.close().catch(() => {}); calib.str.getTracks().forEach(t => t.stop());
-    const n = calib.count(); calib = null;
-    $('calibPanel').hidden = true; $('calibGo').hidden = false; $('go').disabled = false;
-    return n;
-  }
-  $('calibCancel').addEventListener('click', () => { endCalib(); });
-  $('calibDone').addEventListener('click', () => {
-    const n = endCalib(), w = words(PASSAGES[langKey()] || PASSAGES.en), k = n / w;
-    if (k < 0.7 || k > 2.5) {
-      $('calibStatus').textContent = `Heard ${n} syllables for ${w} words, which doesn't look right. Try again a little closer to the phone, somewhere quiet.`;
-      return;
+      const c = { str, n: 0, t0: 0, first: 0, last: 0, levels: [], ticks: [], raf: 0 };
+      c.ctx = await openSound(str, () => {
+        const t = performance.now();
+        if (!c.n) c.first = t;
+        c.n++; c.last = t; c.ticks.push(t);
+      }, l => c.levels.push({ t: performance.now(), l }));
+      c.t0 = performance.now(); cal = c;
+      $('calibStart').textContent = 'Stop'; $('go').disabled = true;
+      calReadout();
+    } catch (e) {
+      $('calibResult').hidden = false;
+      $('calibResult').innerHTML = '<p class="warn"></p>';
+      $('calibResult').firstChild.textContent = 'Could not open the microphone: ' + e.message;
     }
-    store.set('k.' + langKey(), k);
-    showMode();
+    $('calibStart').disabled = false;
   });
+
+  function showCalResult(c) {
+    const w = passageWords(), n = c.n, k = n / w;
+    // reading time runs from the first syllable to the last, so a late tap on Stop doesn't count
+    const secs = n > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
+    const before = kNow(), wasSet = store.get('k.' + langKey(), null) != null;
+    const box = $('calibResult'); box.hidden = false;
+    const ok = k >= 0.7 && k <= 2.5;
+    const fmt = (v, d) => v.toFixed(d);
+    box.innerHTML = `
+      <dl>
+        <dt>Words in the passage</dt><dd>${w}</dd>
+        <dt>Reading time</dt><dd>${fmt(secs, 1)} s</dd>
+        <dt>Your reading pace</dt><dd>${Math.round(w / (secs / 60))} wpm</dd>
+        <dt>Syllables heard</dt><dd>${n}</dd>
+        <dt>Syllables per second</dt><dd>${fmt(n / secs, 1)}</dd>
+        <dt class="key">Syllables per word</dt><dd class="key">${n} ÷ ${w} = ${fmt(k, 2)}</dd>
+      </dl>
+      ${ok ? `<p>From now on the meter divides by <b>${fmt(k, 2)}</b> instead of ${fmt(before, 2)} (${wasSet ? 'your last calibration' : 'a typical value'}). For example, 200 syllables in a minute counts as 200 ÷ ${fmt(k, 2)} = ${Math.round(200 / k)} words per minute.</p>
+            <div class="row"><button type="button" class="primary" id="calibSave">Use ${fmt(k, 2)}</button><button type="button" id="calibRetry">Try again</button></div>`
+          : `<p class="warn">${n < w * 0.7 ? 'That is fewer syllables than words, so it missed a lot of your speech.' : 'That is far more syllables than the passage has, so it picked up other noise.'} Try again somewhere quiet, holding the phone about 30 cm from your mouth.</p>
+            <div class="row"><button type="button" id="calibRetry">Try again</button></div>`}`;
+    if (ok) $('calibSave').onclick = () => {
+      store.set('k.' + langKey(), k); showMode();
+      $('calibPanel').hidden = true; $('calibOpen').hidden = false;
+      $('calibStatus').textContent += ' Saved.';
+    };
+    $('calibRetry').onclick = () => {
+      box.hidden = true; $('calTime').textContent = '0.0 s'; $('calSyl').textContent = '0'; $('calRate').textContent = '–';
+      drawStrip($('calibVoice'), [], [], 0);
+    };
+  }
 
   // state
   let rec = null, running = false, paused = false, startedAt = 0, timer = null, wakeLock = null;
@@ -735,19 +808,23 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     sylCount++; events.push({ t: now, n: 1 / k }); lastWordAt = now; ticks.push(now);
   }
 
-  // last 6 seconds of loudness, with a tick per syllable
-  function drawVoice() {
-    const c = $('voice'), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  // last 6 seconds of loudness, with a tick per syllable; returns the points still on screen
+  function drawStrip(c, lv, tk, now) {
+    const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
     if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
     const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
     const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
-    const now = clock(), span = 6000, x = t => w - (now - t) / span * w;
-    levels = levels.filter(p => now - p.t < span); ticks = ticks.filter(t => now - t < span);
+    const span = 6000, x = t => w - (now - t) / span * w;
+    lv = lv.filter(p => now - p.t < span); tk = tk.filter(t => now - t < span);
     g.fillStyle = col('--muted'); g.globalAlpha = .35; g.beginPath(); g.moveTo(w, h);
-    for (let i = levels.length - 1; i >= 0; i--) g.lineTo(x(levels[i].t), h - Math.max(0, Math.min(1, levels[i].l / 50)) * (h - 14));
-    g.lineTo(levels.length ? x(levels[0].t) : w, h); g.fill(); g.globalAlpha = 1;
+    for (let i = lv.length - 1; i >= 0; i--) g.lineTo(x(lv[i].t), h - Math.max(0, Math.min(1, lv[i].l / 50)) * (h - 14));
+    g.lineTo(lv.length ? x(lv[0].t) : w, h); g.fill(); g.globalAlpha = 1;
     g.fillStyle = col('--accent');
-    for (const t of ticks) g.fillRect(x(t) - 1.5, 0, 3, 10);
+    for (const t of tk) g.fillRect(x(t) - 1.5, 0, 3, 10);
+    return [lv, tk];
+  }
+  function drawVoice() {
+    [levels, ticks] = drawStrip($('voice'), levels, ticks, clock());
     if (running) raf = requestAnimationFrame(drawVoice);
   }
 
