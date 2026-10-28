@@ -55,7 +55,11 @@ h1 { font: 600 1.4rem/1.2 var(--display); margin: 0; }
 .scale span { position: absolute; transform: translateX(-50%); }
 
 button.go { font: 600 1.15rem var(--body); width: 100%; padding: 18px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; cursor: pointer; }
-button.go.stop { background: var(--fg); color: var(--bg); }
+button.go.pause { background: var(--fg); color: var(--bg); }
+.controls { display: flex; gap: 10px; }
+.controls .go { flex: 1 1 auto; }
+button.end { font: 600 1.15rem var(--body); flex: 0 0 auto; padding: 18px 22px; border-radius: 12px; border: 2px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
+.paused .dot { background: var(--muted); }
 button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid var(--slow); outline-offset: 2px; }
 
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -98,7 +102,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   </section>
 
   <p id="err" hidden></p>
-  <button class="go" id="go" type="button">Start</button>
+  <div class="controls">
+    <button class="go" id="go" type="button">Start</button>
+    <button class="end" id="end" type="button" hidden>Stop</button>
+  </div>
 
   <div class="stats">
     <div><small>Session avg</small><b id="avg">–</b></div>
@@ -196,7 +203,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   }
 
   // state
-  let rec = null, running = false, startedAt = 0, timer = null, wakeLock = null;
+  let rec = null, running = false, paused = false, startedAt = 0, timer = null, wakeLock = null;
+  // the session clock stands still while paused, so the window and averages pick up where they left off
+  let pausedAt = 0, pausedTotal = 0;
+  const clock = () => performance.now() - pausedTotal;
   let doneWords = 0;          // words from recognition sessions that have ended
   let sessionText = '';       // finalised text in the current recognition session
   let sessionCount = 0;       // words counted so far in this session (final + interim)
@@ -251,7 +261,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     const count = words(finalText) + words(interim);
     const delta = count - sessionCount;
     if (delta !== 0) {
-      const now = performance.now();
+      const now = clock();
       events.push({ t: now, n: delta });
       if (delta > 0) lastWordAt = now;
       sessionCount = count;
@@ -263,7 +273,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   }
 
   function tick() {
-    const now = performance.now();
+    const now = clock();
     const dt = now - lastTick; lastTick = now;
     if (now - lastWordAt < 2000) speakingMs += dt;   // speaking if a word arrived in the last 2 s
     const W = settings.win * 1000;
@@ -288,7 +298,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     const readout = document.querySelector('.readout');
     if (wpm === null) {
       $('wpm').textContent = '–';
-      $('verdict').textContent = running ? (performance.now() - startedAt < 4000 ? 'Listening…' : 'Paused') : 'Tap Start and begin speaking';
+      $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : 'Waiting for speech…') : 'Tap Start and begin speaking';
       readout.style.removeProperty('--state');
       $('marker').style.opacity = .25;
       return;
@@ -335,31 +345,67 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   async function start() {
     $('err').hidden = true;
     doneWords = 0; sessionText = ''; sessionCount = 0; events = []; trace = []; finalLog = '';
-    speakingMs = 0; lastWordAt = 0; startedAt = lastTick = performance.now();
+    pausedTotal = 0; paused = false;
+    speakingMs = 0; lastWordAt = 0; startedAt = lastTick = clock();
     $('transcript').textContent = '';
+    listen();
+  }
+
+  async function listen() {
     running = true;
     rec = newRec();
     try { rec.start(); } catch (e) { showErr('Could not start the microphone: ' + e.message); running = false; return; }
-    document.body.classList.add('listening');
+    document.body.classList.add('listening'); document.body.classList.remove('paused');
     $('statusText').textContent = 'Listening';
-    $('go').textContent = 'Stop'; $('go').classList.add('stop');
+    $('go').textContent = 'Pause'; $('go').classList.add('pause');
+    $('end').hidden = false;
     timer = setInterval(tick, 250);
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
   }
 
-  function stop() {
+  function halt() {
     running = false;
-    if (rec) { try { rec.stop(); } catch {} }
-    clearInterval(timer); tick();
+    if (rec) {
+      // detach first so a late end event from this recogniser cannot restart it or recount its words
+      rec.onresult = rec.onend = null;
+      try { rec.stop(); } catch {}
+      doneWords += sessionCount; sessionText = ''; sessionCount = 0;
+    }
+    clearInterval(timer);
     document.body.classList.remove('listening');
-    $('statusText').textContent = 'Stopped';
-    $('go').textContent = 'Start again'; $('go').classList.remove('stop');
-    $('verdict').textContent = trace.length ? 'Session finished' : 'Tap Start and begin speaking';
     try { wakeLock?.release(); } catch {}
     wakeLock = null;
   }
 
-  $('go').addEventListener('click', () => running ? stop() : start());
+  function pause() {
+    tick(); halt();
+    paused = true; pausedAt = performance.now();
+    document.body.classList.add('paused');
+    $('statusText').textContent = 'Paused';
+    $('go').textContent = 'Resume'; $('go').classList.remove('pause');
+    show(null);
+  }
+
+  function resume() {
+    pausedTotal += performance.now() - pausedAt;
+    paused = false; lastTick = clock();
+    $('err').hidden = true;
+    listen();
+  }
+
+  function stop() {
+    if (paused) { pausedTotal += performance.now() - pausedAt; paused = false; }
+    else { tick(); }
+    halt();
+    document.body.classList.remove('paused');
+    $('statusText').textContent = 'Stopped';
+    $('go').textContent = 'Start again'; $('go').classList.remove('pause');
+    $('end').hidden = true;
+    $('verdict').textContent = trace.length ? 'Session finished' : 'Tap Start and begin speaking';
+  }
+
+  $('go').addEventListener('click', () => running ? pause() : paused ? resume() : start());
+  $('end').addEventListener('click', stop);
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState === 'visible' && running) { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {} }
   });
