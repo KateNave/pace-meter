@@ -121,6 +121,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 .guide .syl.now.hit, .guide .syl.now.miss { color: #fff; background: var(--accent); }
 #guideVoice { height: 56px; }
 .version { text-align: center; }
+.tabs { display: flex; gap: 4px; padding: 4px; background: var(--bg); border-radius: 10px; }
+.tabs button { flex: 1; font: 500 .9rem var(--body); padding: 8px 6px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+.tabs button[aria-selected=true] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgb(0 0 0 / .12); }
+.tabs button .inuse { display: block; font-size: .68rem; color: var(--good); font-weight: 500; }
 .runs-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
 .runs { width: 100%; border-collapse: collapse; font-size: .85rem; }
 .runs th { text-align: left; font-weight: 500; color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; padding: 8px 5px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -212,6 +216,12 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       <p class="note">The live number counts pauses, like the published figures for lectures and reading. Nothing you say leaves your phone.</p>
       <div class="calib" id="calib">
         <div class="label">Calibrate to your voice</div>
+        <p class="note" id="calOverview"></p>
+        <div class="tabs" role="tablist" aria-label="Filter setting to calibrate">
+          <button type="button" role="tab" data-sens="strict">Strict</button>
+          <button type="button" role="tab" data-sens="normal">Normal</button>
+          <button type="button" role="tab" data-sens="sensitive">Sensitive</button>
+        </div>
         <p class="note" id="calibStatus"></p>
         <div class="runs-wrap" id="runsWrap" hidden><table class="runs" id="runs"></table></div>
         <p class="note" id="checkStatus" hidden></p>
@@ -258,7 +268,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 28 Oct 2026, background filter</p>
+  <p class="note version">Version: 28 Oct 2026, calibration per filter</p>
 </main>
 
 <script>
@@ -487,23 +497,22 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   // Every calibration run you keep is stored; the meter uses all the ones ticked, pooled (total bursts ÷ total syllables).
   const runs = () => store.get('calRuns', []);
   const DET = 2;   // runs made with an earlier detector don't describe this one
-  const SENS_NAME = { strict: 'strict', normal: 'normal', sensitive: 'sensitive' };
-  // runs the meter uses: this detector, and the current filter setting if there are any for it
-  function runsInUse() {
-    const cur = runs().filter(x => x.det === DET && x.on !== false);
-    const same = cur.filter(x => (x.sens || 'normal') === settings.sens);
-    return { list: same.length ? same : cur, other: !same.length && cur.length > 0 };
-  }
+  // Each filter setting has its own calibration: runs and checks made with it, and nothing from the others.
+  let calSens = store.get('calSens', settings.sens);
+  const sensOf = x => x.sens || 'normal';
+  const runsFor = sens => runs().filter(x => x.det === DET && x.on !== false && sensOf(x) === sens);
+  function runsInUse() { return { list: runsFor(calSens), other: false }; }
   function pooled(list) {
     const on = list.filter(x => x.on !== false);
     const b = on.reduce((a, x) => a + x.bursts, 0), n = on.reduce((a, x) => a + x.syl, 0);
     return n ? { f: b / n, runs: on.length, syl: n, min: Math.min(...on.map(x => x.bursts / x.syl)), max: Math.max(...on.map(x => x.bursts / x.syl)) } : null;
   }
   function addRun(run) {
-    const list = runs(); list.push({ id: Date.now(), on: true, det: DET, sens: settings.sens, ...run }); store.set('calRuns', list); showCalib();
+    const list = runs(); list.push({ id: Date.now(), on: true, det: DET, sens: calSens, ...run }); store.set('calRuns', list); showCalib();
   }
-  // detected bursts per real syllable; 1 until calibrated
-  const factor = () => { const p = pooled(runsInUse().list); return p ? p.f : 1; };
+  // detected bursts per real syllable for a filter setting; 1 until calibrated
+  const factorFor = sens => { const p = pooled(runsFor(sens)); return p ? p.f : 1; };
+  const factor = () => factorFor(settings.sens);   // what live sessions use
 
   async function getStream() {
     // automatic gain would turn the microphone up whenever you pause, making distant voices as loud as yours
@@ -516,7 +525,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     normal: { floorMargin: 10, refMargin: 14, minVoiced: 3 },
     sensitive: { floorMargin: 7, refMargin: 20, minVoiced: 2 }
   };
-  async function openSound(str, onSyl, onLevel, onRej) {
+  async function openSound(str, onSyl, onLevel, onRej, sens = settings.sens) {
     const ctx = new AudioContext();
     await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([DETECTOR], { type: 'application/javascript' })));
     const src = ctx.createMediaStreamSource(str);
@@ -526,20 +535,29 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const node = new AudioWorkletNode(ctx, 'syllables');
     const mute = new GainNode(ctx, { gain: 0 });
     src.connect(hp).connect(lp1).connect(lp2).connect(node).connect(mute).connect(ctx.destination);
-    node.port.postMessage(SENS[settings.sens] || SENS.normal);
+    node.port.postMessage(SENS[sens] || SENS.normal);
     node.port.onmessage = e => e.data.syl ? onSyl() : e.data.rej ? onRej && onRej() : onLevel(e.data.level);
     await ctx.resume();
     return ctx;
   }
 
+  const SENS_LABEL = { strict: 'Strict', normal: 'Normal', sensitive: 'Sensitive' };
   function showCalib() {
-    const list = runs(), use = runsInUse(), p = pooled(use.list), old = list.some(x => x.det !== DET);
+    document.querySelectorAll('.tabs button').forEach(b => {
+      b.setAttribute('aria-selected', b.dataset.sens === calSens);
+      b.innerHTML = SENS_LABEL[b.dataset.sens] + (b.dataset.sens === settings.sens ? '<span class="inuse">in use</span>' : '');
+    });
+    $('calOverview').innerHTML = 'Each filter setting has its own calibration and checks. ' + Object.keys(SENS_LABEL).map(k => {
+      const q = pooled(runsFor(k));
+      return `${SENS_LABEL[k]}: ${q ? `<b>${q.f.toFixed(2)}</b> (${q.runs} run${q.runs > 1 ? 's' : ''})` : 'not calibrated'}`;
+    }).join(' · ') + `. Live sessions use <b>${SENS_LABEL[settings.sens]}</b>, set under Background noise filter above.`;
+    const list = runs().filter(x => sensOf(x) === calSens), use = runsInUse(), p = pooled(use.list), old = list.some(x => x.det !== DET);
     if (p) {
-      $('calibStatus').innerHTML = `Your calibration: <b>${p.f.toFixed(2)}</b> bursts per syllable, the average of ${p.runs} run${p.runs > 1 ? 's' : ''} (${p.syl} syllables${p.runs > 1 ? `; runs ranged ${p.min.toFixed(2)}–${p.max.toFixed(2)}` : ''}). The meter divides what it hears by this.${p.runs > 1 && p.max - p.min > 0.2 ? ' The runs disagree quite a lot, so a few more will steady the average.' : ''}${use.other ? ` None of your runs used the ${settings.sens} filter, so this uses runs made with another setting; add a few with this one.` : ''}${old ? ' Runs marked “old” were made before the background filter and are not used.' : ''}`;
+      $('calibStatus').innerHTML = `${SENS_LABEL[calSens]} calibration: <b>${p.f.toFixed(2)}</b> bursts per syllable, the average of ${p.runs} run${p.runs > 1 ? 's' : ''} (${p.syl} syllables${p.runs > 1 ? `; runs ranged ${p.min.toFixed(2)}–${p.max.toFixed(2)}` : ''}). Sessions with this filter divide what they hear by this.${p.runs > 1 && p.max - p.min > 0.2 ? ' The runs disagree quite a lot, so a few more will steady the average.' : ''}${old ? ' Runs marked “old” were made before the background filter and are not used.' : ''}`;
     } else if (old) {
       $('calibStatus').textContent = 'The detector changed (it now filters background noise), so your earlier runs no longer apply and are marked “old”. Do a few new runs to recalibrate; until then every burst counts as one syllable.';
     } else {
-      $('calibStatus').textContent = 'Not calibrated yet, so every burst counts as one syllable. Do a few runs with different texts and speeds, add each one, and the meter uses their average.';
+      $('calibStatus').textContent = `${SENS_LABEL[calSens]} isn't calibrated yet, so with this filter every burst counts as one syllable. Runs and checks you do on this tab use the ${SENS_LABEL[calSens]} filter; add a few with different texts and speeds and the meter uses their average.`;
     }
     $('runsWrap').hidden = !list.length;
     if (!list.length) return;
@@ -555,8 +573,8 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       const [c0, c1, c2, c3, c4] = tr.children;
       const isOld = x.det !== DET;
       c0.firstChild.checked = x.on !== false && !isOld; c0.firstChild.disabled = isOld;
-      if (isOld || !use.list.includes(x)) tr.className = 'off';
-      c1.textContent = textById(x.text).label.split(': ')[1] + (isOld ? ' (old)' : (x.sens || 'normal') !== 'normal' ? ` (${x.sens})` : '');
+      if (isOld || !use.list.some(y => y.id === x.id)) tr.className = 'off';
+      c1.textContent = textById(x.text).label.split(': ')[1] + (isOld ? ' (old)' : '');
       c2.textContent = (x.mode === 'guide' ? '' : '~') + x.rate.toFixed(1);
       c3.textContent = x.hits != null ? Math.round(x.hits / x.syl * 100) + '%' : '–';
       c4.innerHTML = `${(x.bursts / x.syl).toFixed(2)}<small>${x.bursts} ÷ ${x.syl}</small>`;
@@ -565,6 +583,12 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       t.tBodies[0].append(tr);
     }
   }
+  document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+    if (cal || guide) return;   // finish or stop the reading first
+    calSens = b.dataset.sens; store.set('calSens', calSens);
+    $('calibResult').hidden = true; $('guideResult').hidden = true;
+    showCalib(); showChecks();
+  }));
   function nextText() {
     const i = TEXTS.findIndex(t => t.id === settings.text);
     settings.text = TEXTS[(i + 1) % TEXTS.length].id; $('ctext').value = settings.text; store.set('ctext', settings.text);
@@ -636,7 +660,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
         const t = performance.now();
         if (!c.n) c.first = t;
         c.n++; c.last = t; c.ticks.push(t);
-      }, l => c.levels.push({ t: performance.now(), l }), () => c.rejs.push(performance.now()));
+      }, l => c.levels.push({ t: performance.now(), l }), () => c.rejs.push(performance.now()), calSens);
       c.t0 = performance.now(); cal = c;
       $('calibStart').textContent = 'Stop'; $('go').disabled = true;
       calReadout();
@@ -680,7 +704,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   // Validation: read a text unpaced; the calibrated count should come out at the text's known syllable count
   const checks = () => store.get('calChecks', []);
   function showCheckResult(c) {
-    const p = passage(), B = c.n, K = p.syl, f = factor(), C = B / f;
+    const p = passage(), B = c.n, K = p.syl, f = factorFor(calSens), C = B / f;
     const err = (C - K) / K, raw = (B - K) / K;
     const secs = B > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
     const used = runsInUse().list.filter(x => x.text === p.id).length;
@@ -691,7 +715,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       <dl>
         <dt>Syllables in the text</dt><dd>${K}</dd>
         <dt>Bursts the detector heard</dt><dd>${B}</dd>
-        <dt>Your calibration</dt><dd>${f.toFixed(2)}</dd>
+        <dt>${SENS_LABEL[calSens]} calibration</dt><dd>${f.toFixed(2)}</dd>
         <dt class="key">Calibrated count</dt><dd class="key">${B} ÷ ${f.toFixed(2)} = ${C.toFixed(1)}</dd>
         <dt>Difference from the text</dt><dd>${(C - K >= 0 ? '+' : '−') + Math.abs(C - K).toFixed(1)} (${pct(err)})</dd>
         <dt>Without calibration</dt><dd>${B} (${pct(raw)})</dd>
@@ -700,25 +724,25 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       <p>${!plausible ? '<span class="warn">The count is too far off to be a fair test; something other than your reading was probably picked up, or much of it was missed.</span>'
         : Math.abs(err) <= 0.05 ? `The calibrated count is within 5% of the true count${Math.abs(err) < Math.abs(raw) ? ', and closer than without calibration' : ''}.`
         : `The calibrated count is ${Math.abs(err * 100).toFixed(0)}% ${err > 0 ? 'over' : 'under'} the true count${Math.abs(err) < Math.abs(raw) ? ', though still closer than without calibration' : Math.abs(err) > Math.abs(raw) ? ', and further off than without calibration' : ''}.`}
-      ${f === 1 && !runsInUse().list.length ? ' You have no calibration runs yet, so this shows the detector on its own.' : ''}
+      ${f === 1 && !runsInUse().list.length ? ` You have no ${SENS_LABEL[calSens]} calibration runs yet, so this shows the detector on its own.` : ''}
       ${used ? ` This text is in ${used} of your calibration runs, so this isn't an independent check.` : ''}
       This only holds if you read every word once, without restarting or adding words.</p>
       <div class="row">${plausible ? '<button type="button" class="primary" id="checkSave">Save this check</button>' : ''}<button type="button" id="calibNext">Next text</button><button type="button" id="calibRetry">Try again</button></div>`;
     if (plausible) $('checkSave').onclick = () => {
-      const l = checks(); l.push({ id: Date.now(), text: p.id, known: K, bursts: B, f, secs, used: used > 0, det: DET, sens: settings.sens }); store.set('calChecks', l);
+      const l = checks(); l.push({ id: Date.now(), text: p.id, known: K, bursts: B, f, secs, used: used > 0, det: DET, sens: calSens }); store.set('calChecks', l);
       showChecks(); $('checkSave').disabled = true; $('checkSave').textContent = 'Saved';
     };
     $('calibNext').onclick = nextText;
     $('calibRetry').onclick = () => { box.hidden = true; resetCalReadout(); };
   }
   function showChecks() {
-    const l = checks();
+    const l = checks().filter(x => sensOf(x) === calSens);
     $('checksWrap').hidden = $('checkStatus').hidden = !l.length;
     if (!l.length) return;
     const errs = l.map(x => (x.bursts / x.f - x.known) / x.known), raws = l.map(x => (x.bursts - x.known) / x.known);
     const mae = a => a.reduce((s, v) => s + Math.abs(v), 0) / a.length * 100;
     const indep = l.filter(x => !x.used);
-    $('checkStatus').innerHTML = `<b>Checks:</b> on average the calibrated count was off by <b>${mae(errs).toFixed(1)}%</b> (${mae(raws).toFixed(1)}% without calibration), over ${l.length} check${l.length > 1 ? 's' : ''}${indep.length < l.length ? `; ${indep.length ? `only ${indep.length}` : 'none'} used a text you hadn't calibrated with` : ''}. Each check uses the calibration you had when you made it.`;
+    $('checkStatus').innerHTML = `<b>${SENS_LABEL[calSens]} checks:</b> on average the calibrated count was off by <b>${mae(errs).toFixed(1)}%</b> (${mae(raws).toFixed(1)}% without calibration), over ${l.length} check${l.length > 1 ? 's' : ''}${indep.length < l.length ? `; ${indep.length ? `only ${indep.length}` : 'none'} used a text you hadn't calibrated with` : ''}. Each check uses the calibration you had when you made it.`;
     const t = $('checks');
     t.innerHTML = `<thead><tr><th>Text</th><th>True</th><th>Calibrated</th><th>Error</th><th></th></tr></thead><tbody></tbody>`;
     l.forEach((x, i) => {
@@ -810,7 +834,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       const str = await getStream();
       const g = { ...plan, str, t0: 0, bursts: [], levels: [], ticks: [], rejs: [], raf: 0, done: 0 };
       g.ctx = await openSound(str, () => { const t = performance.now(); g.ticks.push(t); if (g.t0) g.bursts.push(t - g.t0); },
-                              l => g.levels.push({ t: performance.now(), l }), () => g.rejs.push(performance.now()));
+                              l => g.levels.push({ t: performance.now(), l }), () => g.rejs.push(performance.now()), calSens);
       g.t0 = performance.now() + 3000;
       guide = g;
       $('guideStart').textContent = 'Stop'; $('go').disabled = true; $('guideRate').disabled = true;
