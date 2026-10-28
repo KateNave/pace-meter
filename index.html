@@ -82,6 +82,20 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 .check input { width: 22px; height: 22px; accent-color: var(--accent); }
 .note { font-size: .82rem; color: var(--muted); margin: 0; }
 #err { color: var(--fast); font-weight: 500; margin: 0; }
+.recs { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.recs li { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 10px; min-width: 0; }
+.rec-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+.rec-head b { font-weight: 600; }
+.rec-meta { font: 500 .82rem var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.rec-meta .pace { color: var(--state, var(--fg)); }
+.rec-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.rec-actions button, .rec-actions a { font: 500 .9rem var(--body); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); text-decoration: none; cursor: pointer; }
+.rec-actions .del { color: var(--fast); margin-left: auto; }
+.recs audio { width: 100%; }
+.recs details { padding: 0; border: 0; }
+.recs details summary { font-weight: 500; font-size: .9rem; color: var(--muted); }
+.recs details p { font-size: .9rem; margin: 6px 0 0; overflow-wrap: anywhere; }
+.saving { font-size: .9rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -123,6 +137,12 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     <div class="transcript" id="transcript">Your words appear here as they are recognised.</div>
   </div>
 
+  <section>
+    <div class="label" style="margin-bottom:6px">Recordings</div>
+    <ul class="recs" id="recs"></ul>
+    <p class="note" id="recNote">Each session is saved here when you tap Stop. Recordings stay on this phone only.</p>
+  </section>
+
   <details>
     <summary>Settings</summary>
     <div class="settings">
@@ -149,6 +169,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
       <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
       <label class="check"><input type="checkbox" id="pauses" checked> Leave pauses out of the average</label>
+      <label class="check"><input type="checkbox" id="record" checked> Save a recording of each session</label>
       <p class="note">Uses Chrome's built-in speech recognition, which on Android may send audio to Google to transcribe. Pace is only as accurate as the recognition; mumbled or very fast words can be missed. Keep the screen on while practising.</p>
     </div>
   </details>
@@ -165,10 +186,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // settings
   const settings = { lang: store.get('lang', 'en-GB'), win: store.get('win', 20), lo: store.get('lo', 120), hi: store.get('hi', 160),
-                     buzz: store.get('buzz', true), pauses: store.get('pauses', true) };
+                     buzz: store.get('buzz', true), pauses: store.get('pauses', true), record: store.get('record', true) };
   $('lang').value = settings.lang; $('win').value = settings.win; $('lo').value = settings.lo; $('hi').value = settings.hi;
-  $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses;
-  for (const id of ['lang', 'win', 'lo', 'hi', 'buzz', 'pauses']) {
+  $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('record').checked = settings.record;
+  for (const id of ['lang', 'win', 'lo', 'hi', 'buzz', 'pauses', 'record']) {
     $(id).addEventListener('change', e => {
       const el = e.target;
       settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
@@ -195,6 +216,76 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   }
   drawScale();
 
+  // recordings: kept in this browser's IndexedDB
+  const db = new Promise((res, rej) => {
+    const q = indexedDB.open('pace-meter', 1);
+    q.onupgradeneeded = () => q.result.createObjectStore('recordings', { keyPath: 'id' });
+    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+  });
+  async function idb(mode, fn) {
+    const d = await db;
+    return new Promise((res, rej) => {
+      const tx = d.transaction('recordings', mode), q = fn(tx.objectStore('recordings'));
+      tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error);
+    });
+  }
+  const fmtDur = ms => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  const extFor = type => type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+  let urls = [];
+
+  async function renderRecs() {
+    let items = [];
+    try { items = await idb('readonly', st => st.getAll()); } catch { $('recNote').textContent = 'This browser cannot store recordings.'; return; }
+    urls.forEach(URL.revokeObjectURL); urls = [];
+    const list = $('recs'); list.innerHTML = '';
+    items.sort((a, b) => b.id - a.id);
+    for (const it of items) {
+      const li = document.createElement('li');
+      const d = new Date(it.id);
+      const when = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' +
+                   d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      const state = it.avg == null ? '' : it.avg > it.hi ? 'var(--fast)' : it.avg < it.lo ? 'var(--slow)' : 'var(--good)';
+      const url = URL.createObjectURL(it.blob); urls.push(url);
+      const name = `pace-${d.toISOString().slice(0, 16).replace(/[T:]/g, '-')}.${extFor(it.blob.type)}`;
+      li.innerHTML = `
+        <div class="rec-head"><b></b><span class="rec-meta"><span class="pace" style="--state:${state}"></span> · <span class="len"></span></span></div>
+        <audio controls preload="metadata"></audio>
+        <div class="rec-actions"><a class="dl">Download</a><button type="button" class="share" hidden>Share</button><button type="button" class="del">Delete</button></div>`;
+      li.querySelector('b').textContent = when;
+      li.querySelector('.pace').textContent = it.avg == null ? 'no pace' : `${it.avg} wpm avg`;
+      li.querySelector('.len').textContent = `${fmtDur(it.ms)} · ${it.words} words`;
+      const au = li.querySelector('audio'); au.src = url;
+      // Chrome's recordings carry no length, so the seek bar is blank until the player has scanned to the end once
+      au.addEventListener('loadedmetadata', () => {
+        if (au.duration !== Infinity) return;
+        au.addEventListener('timeupdate', () => { au.currentTime = 0; }, { once: true });
+        au.currentTime = 1e9;
+      }, { once: true });
+      const dl = li.querySelector('.dl'); dl.href = url; dl.download = name;
+      const file = new File([it.blob], name, { type: it.blob.type });
+      if (navigator.canShare?.({ files: [file] })) {
+        const sh = li.querySelector('.share'); sh.hidden = false;
+        sh.onclick = () => navigator.share({ files: [file], title: 'Speaking practice ' + when }).catch(() => {});
+      }
+      li.querySelector('.del').onclick = async () => {
+        if (!confirm(`Delete the recording from ${when}?`)) return;
+        await idb('readwrite', st => st.delete(it.id)); renderRecs();
+      };
+      if (it.transcript) {
+        const det = document.createElement('details');
+        det.innerHTML = '<summary>Transcript</summary><p></p>';
+        det.querySelector('p').textContent = it.transcript;
+        li.append(det);
+      }
+      list.append(li);
+    }
+    let note = items.length ? '' : 'Each session is saved here when you tap Stop. ';
+    note += 'Recordings stay on this phone only; clearing Chrome\'s site data deletes them.';
+    try { const e = await navigator.storage.estimate(); if (items.length) note += ` Using ${(e.usage / 1048576).toFixed(1)} MB.`; } catch {}
+    $('recNote').textContent = note;
+  }
+  renderRecs();
+
   if (!SR) {
     $('err').hidden = false;
     $('err').textContent = 'This browser has no speech recognition. On Android, open this page in Chrome.';
@@ -213,10 +304,18 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   let events = [];            // {t, n}: word count changes with timestamps
   let lastWordAt = 0, speakingMs = 0, lastTick = 0;
   let trace = [];             // {t, wpm}
-  let lastBuzz = 0, finalLog = '';
+  let lastBuzz = 0, finalLog = '', fullLog = '';
+  let stream = null, recorder = null, chunks = [];   // the session's audio recording
 
   const words = s => (s.trim().match(/\S+/g) || []).length;
   const norm = s => s.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  // Newer Chrome can listen to the same microphone track that is being recorded; older versions ignore the track.
+  function startRec(r) {
+    const track = stream?.getAudioTracks()[0];
+    if (track) { try { r.start(track); return; } catch {} }
+    r.start();
+  }
 
   function newRec() {
     const r = new SR();
@@ -226,6 +325,10 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         showErr('Microphone access was blocked. Tap the lock icon in the address bar, allow the microphone, then tap Start again.');
         stop();
+      } else if (e.error === 'audio-capture' && stream) {
+        // this phone cannot record and recognise at once: keep measuring, drop the recording
+        dropRecording();
+        showErr('This phone can\'t record and measure pace at the same time, so this session isn\'t being recorded. Turn off "Save a recording" in Settings to skip this message.');
       } else if (e.error === 'audio-capture') {
         showErr('No microphone found, or another app is using it.'); stop();
       } else if (e.error === 'network') {
@@ -235,7 +338,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     };
     r.onend = () => {
       doneWords += sessionCount; sessionText = ''; sessionCount = 0;
-      if (running) { try { r.lang = settings.lang; r.start(); } catch { setTimeout(() => running && rec.start(), 250); } }
+      if (running) { try { r.lang = settings.lang; startRec(r); } catch { setTimeout(() => { if (running) try { startRec(rec); } catch {} }, 250); } }
     };
     return r;
   }
@@ -255,7 +358,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     if (interim && finalText && norm(interim).startsWith(norm(finalText))) interim = interim.slice(finalText.length);
     if (finalText.length > sessionText.length) {
       const added = finalText.slice(sessionText.length).trim();
-      if (added) finalLog = (finalLog + ' ' + added).slice(-600);
+      if (added) { finalLog = (finalLog + ' ' + added).slice(-600); fullLog += ' ' + added; }
       sessionText = finalText;
     }
     const count = words(finalText) + words(interim);
@@ -345,16 +448,19 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   async function start() {
     $('err').hidden = true;
     doneWords = 0; sessionText = ''; sessionCount = 0; events = []; trace = []; finalLog = '';
-    pausedTotal = 0; paused = false;
-    speakingMs = 0; lastWordAt = 0; startedAt = lastTick = clock();
+    pausedTotal = 0; paused = false; fullLog = '';
     $('transcript').textContent = '';
+    $('go').disabled = true;
+    if (settings.record) await startRecording();
+    $('go').disabled = false;
+    speakingMs = 0; lastWordAt = 0; startedAt = lastTick = clock();
     listen();
   }
 
   async function listen() {
     running = true;
     rec = newRec();
-    try { rec.start(); } catch (e) { showErr('Could not start the microphone: ' + e.message); running = false; return; }
+    try { startRec(rec); } catch (e) { showErr('Could not start the microphone: ' + e.message); running = false; dropRecording(); return; }
     document.body.classList.add('listening'); document.body.classList.remove('paused');
     $('statusText').textContent = 'Listening';
     $('go').textContent = 'Pause'; $('go').classList.add('pause');
@@ -384,12 +490,16 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     $('statusText').textContent = 'Paused';
     $('go').textContent = 'Resume'; $('go').classList.remove('pause');
     show(null);
+    if (recorder?.state === 'recording') recorder.pause();
+    stream?.getAudioTracks().forEach(t => t.enabled = false);
   }
 
   function resume() {
     pausedTotal += performance.now() - pausedAt;
     paused = false; lastTick = clock();
     $('err').hidden = true;
+    stream?.getAudioTracks().forEach(t => t.enabled = true);
+    if (recorder?.state === 'paused') recorder.resume();
     listen();
   }
 
@@ -402,6 +512,52 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     $('go').textContent = 'Start again'; $('go').classList.remove('pause');
     $('end').hidden = true;
     $('verdict').textContent = trace.length ? 'Session finished' : 'Tap Start and begin speaking';
+    saveRecording();
+  }
+
+  async function startRecording() {
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) return;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (e) {
+      stream = null;
+      showErr(e.name === 'NotAllowedError' ? 'Microphone access was blocked, so this session is not being recorded.' : 'Could not start recording: ' + e.message);
+      return;
+    }
+    const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus'].find(t => MediaRecorder.isTypeSupported(t));
+    chunks = [];
+    recorder = new MediaRecorder(stream, { ...(type && { mimeType: type }), audioBitsPerSecond: 32000 });
+    recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+    recorder.start(1000);
+  }
+
+  function dropRecording() {
+    if (recorder) { recorder.ondataavailable = null; try { recorder.stop(); } catch {} }
+    stream?.getTracks().forEach(t => t.stop());
+    recorder = null; stream = null; chunks = [];
+  }
+
+  function saveRecording() {
+    if (!recorder) return;
+    const r = recorder, s = stream;
+    const ms = clock() - startedAt, total = doneWords + sessionCount;
+    const base = settings.pauses ? speakingMs : ms;
+    const meta = { id: Date.now(), ms, words: total, avg: total > 5 && base > 5000 ? Math.round(total / (base / 60000)) : null,
+                   lo: settings.lo, hi: settings.hi, lang: settings.lang, transcript: fullLog.trim() };
+    recorder = null; stream = null;
+    $('recNote').textContent = 'Saving recording…';
+    r.onstop = async () => {
+      s.getTracks().forEach(t => t.stop());
+      const blob = new Blob(chunks, { type: r.mimeType || 'audio/webm' });
+      chunks = [];
+      if (!blob.size) { renderRecs(); return; }
+      try {
+        navigator.storage?.persist?.();
+        await idb('readwrite', st => st.put({ ...meta, blob }));
+      } catch (e) { showErr('Could not save the recording: ' + (e.message || e)); }
+      renderRecs();
+    };
+    try { r.stop(); } catch { r.onstop(); }
   }
 
   $('go').addEventListener('click', () => running ? pause() : paused ? resume() : start());
