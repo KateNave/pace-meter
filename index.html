@@ -121,6 +121,18 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 .guide .syl.now.hit, .guide .syl.now.miss { color: #fff; background: var(--accent); }
 #guideVoice { height: 56px; }
 .version { text-align: center; }
+.runs-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.runs { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.runs th { text-align: left; font-weight: 500; color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; padding: 8px 5px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.runs td { padding: 6px 5px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.runs tr:last-child td { border-bottom: 0; }
+.runs td.num { font: 500 .85rem var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.runs tr.off td:not(:first-child) { opacity: .45; }
+.runs input { width: 20px; height: 20px; accent-color: var(--accent); }
+.runs .x { border: 0; background: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; padding: 2px 4px; }
+.runs tfoot td { font-weight: 600; background: var(--bg); white-space: normal; }
+.runs tfoot .by td { font-weight: 400; color: var(--muted); font-size: .8rem; padding-top: 0; }
+.runs td small { display: block; font-size: .72rem; color: var(--muted); font-weight: 400; }
 </style>
 </head>
 <body>
@@ -185,12 +197,6 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
             <option value="60">60 s (smooth)</option>
           </select>
         </label>
-        <label>Calibration text
-          <select id="lang">
-            <option value="en">English</option>
-            <option value="de">Deutsch</option>
-          </select>
-        </label>
       </div>
       <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
       <label class="check"><input type="checkbox" id="pauses"> Leave pauses out of the session average</label>
@@ -199,6 +205,8 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       <div class="calib" id="calib">
         <div class="label">Calibrate to your voice</div>
         <p class="note" id="calibStatus"></p>
+        <div class="runs-wrap" id="runsWrap" hidden><table class="runs" id="runs"></table></div>
+        <div class="row"><label>Text to read <select id="ctext"></select></label></div>
         <div class="row"><button type="button" id="guideOpen">Read along with a guide</button><button type="button" id="calibOpen">Read at my own pace</button></div>
         <div id="guidePanel" class="calib-panel" hidden>
           <p class="note"><b>Read along.</b> A marker moves through the text one syllable at a time. Say each syllable as the marker reaches it. As you go, each syllable turns green if the meter heard it and red if it didn't, so you can see exactly what it picks up.</p>
@@ -240,7 +248,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 28 Oct 2026, syllables a second</p>
+  <p class="note version">Version: 28 Oct 2026, averaged calibration</p>
 </main>
 
 <script>
@@ -253,11 +261,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // settings
   const settings = { lo: store.get('lo3', 3.4), hi: store.get('hi3', 4), win: store.get('win', 20),
-                     lang: store.get('lang2', 'en'), buzz: store.get('buzz', true), pauses: store.get('pauses2', false), record: store.get('record', true) };
-  $('lo').value = settings.lo; $('hi').value = settings.hi; $('win').value = settings.win; $('lang').value = settings.lang;
+                     text: store.get('ctext', 'en-pace'), buzz: store.get('buzz', true), pauses: store.get('pauses2', false), record: store.get('record', true) };
+  $('lo').value = settings.lo; $('hi').value = settings.hi; $('win').value = settings.win;
   $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('record').checked = settings.record;
-  const keys = { lang: 'lang2', pauses: 'pauses2', lo: 'lo3', hi: 'hi3' };
-  for (const id of ['lo', 'hi', 'win', 'lang', 'buzz', 'pauses', 'record']) {
+  const keys = { pauses: 'pauses2', lo: 'lo3', hi: 'hi3' };
+  for (const id of ['lo', 'hi', 'win', 'buzz', 'pauses', 'record']) {
     $(id).addEventListener('change', e => {
       const el = e.target;
       settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
@@ -425,14 +433,29 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 });`;
 
   // Calibration texts, split into syllables by hand (hyphens mark syllable breaks)
-  const SYLLABIFIED = {
-    en: 'Good mor-ning ev-ery-one. To-day I want to talk a-bout why the pace of your speech mat-ters so much. When we speak too quick-ly, lis-ten-ers strug-gle to keep up, and the im-por-tant points get lost. When we speak too slow-ly, peo-ple drift a-way and stop pay-ing at-ten-tion. The goal is a stead-y, nat-u-ral rhy-thm with clear paus-es be-tween i-de-as.',
-    de: 'Gu-ten Mor-gen zu-sam-men. Heu-te möch-te ich da-rü-ber spre-chen, wa-rum das Tem-po beim Spre-chen so wich-tig ist. Wenn wir zu schnell spre-chen, kom-men die Zu-hö-rer nicht mit, und die wich-ti-gen Punk-te ge-hen ver-lo-ren. Wenn wir zu lang-sam spre-chen, schwei-fen die Leu-te ab und hö-ren nicht mehr zu. Das Ziel ist ein ru-hi-ger, na-tür-li-cher Rhyth-mus mit kla-ren Pau-sen zwi-schen den Ge-dan-ken.'
-  };
-  const PASSAGES = Object.fromEntries(Object.entries(SYLLABIFIED).map(([k, t]) =>
-    [k, { text: t.replace(/-/g, ''), syl: t.split(/\s+/).reduce((n, w) => n + w.split('-').length, 0) }]));
+  const TEXTS = [
+    { id: 'en-pace', label: 'English: speaking pace', s: 'Good mor-ning ev-ery-one. To-day I want to talk a-bout why the pace of your speech mat-ters so much. When we speak too quick-ly, lis-ten-ers strug-gle to keep up, and the im-por-tant points get lost. When we speak too slow-ly, peo-ple drift a-way and stop pay-ing at-ten-tion. The goal is a stead-y, nat-u-ral rhy-thm with clear paus-es be-tween i-de-as.' },
+    { id: 'en-phil', label: 'English: philosophy', s: 'Phi-los-o-phers have long ar-gued a-bout wheth-er our knowl-edge of the ex-ter-nal world can ev-er be jus-ti-fied. The scep-tic in-sists that ev-ery ex-pe-ri-ence we have is com-pat-i-ble with our be-ing sys-tem-at-i-cal-ly de-ceived. Re-spond-ing to this chal-lenge re-quires us to think care-ful-ly a-bout what jus-ti-fi-ca-tion ac-tu-al-ly de-mands.' },
+    { id: 'en-story', label: 'English: holiday story', s: 'Last sum-mer we rent-ed a small cot-tage by the sea. Ev-ery morn-ing I walked a-long the beach be-fore break-fast, watch-ing the fish-ing boats come back in. In the af-ter-noons we read, swam, and ar-gued a-bout noth-ing in par-tic-u-lar. It was the qui-et-est hol-i-day I can re-mem-ber.' },
+    { id: 'de-pace', label: 'Deutsch: Sprechtempo', s: 'Gu-ten Mor-gen zu-sam-men. Heu-te möch-te ich da-rü-ber spre-chen, wa-rum das Tem-po beim Spre-chen so wich-tig ist. Wenn wir zu schnell spre-chen, kom-men die Zu-hö-rer nicht mit, und die wich-ti-gen Punk-te ge-hen ver-lo-ren. Wenn wir zu lang-sam spre-chen, schwei-fen die Leu-te ab und hö-ren nicht mehr zu. Das Ziel ist ein ru-hi-ger, na-tür-li-cher Rhyth-mus mit kla-ren Pau-sen zwi-schen den Ge-dan-ken.' },
+    { id: 'de-phil', label: 'Deutsch: Philosophie', s: 'Die Phi-lo-so-phie fragt seit je-her, wo-rauf sich un-ser Wis-sen ei-gent-lich stützt. Kön-nen wir si-cher sein, dass die Welt so ist, wie sie uns er-scheint? Die-se Fra-ge klingt ein-fach, a-ber ih-re Be-ant-wor-tung ver-langt ge-nau-e Be-griffs-ar-beit.' }
+  ].map(t => ({ ...t, text: t.s.replace(/-/g, ''), syl: t.s.split(/\s+/).reduce((n, w) => n + w.split('-').length, 0) }));
+  const textById = id => TEXTS.find(t => t.id === id) || TEXTS[0];
+  $('ctext').innerHTML = TEXTS.map(t => `<option value="${t.id}">${t.label} (${t.syl} syllables)</option>`).join('');
+  $('ctext').value = textById(settings.text).id;
+
+  // Every calibration run you keep is stored; the meter uses all the ones ticked, pooled (total bursts ÷ total syllables).
+  const runs = () => store.get('calRuns', []);
+  function pooled(list) {
+    const on = list.filter(x => x.on !== false);
+    const b = on.reduce((a, x) => a + x.bursts, 0), n = on.reduce((a, x) => a + x.syl, 0);
+    return n ? { f: b / n, runs: on.length, syl: n, min: Math.min(...on.map(x => x.bursts / x.syl)), max: Math.max(...on.map(x => x.bursts / x.syl)) } : null;
+  }
+  function addRun(run) {
+    const list = runs(); list.push({ id: Date.now(), on: true, ...run }); store.set('calRuns', list); showCalib();
+  }
   // detected bursts per real syllable; 1 until calibrated
-  const factor = () => { const v = store.get('factor', null); return v > 0.5 && v < 2 ? v : 1; };
+  const factor = () => { const p = pooled(runs()); if (p) return p.f; const v = store.get('factor', null); return v > 0.5 && v < 2 ? v : 1; };
 
   async function getStream() {
     return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
@@ -454,15 +477,45 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   }
 
   function showCalib() {
-    const v = store.get('factor', null);
-    $('calibStatus').textContent = v > 0.5 && v < 2
-      ? `Calibrated: the detector hears ${v.toFixed(2)} bursts for every real syllable of yours, and the meter divides by that.`
-      : 'Not calibrated yet, so every burst counts as one syllable. Reading one short passage corrects the count for your voice.';
+    const list = runs(), p = pooled(list), legacy = store.get('factor', null);
+    if (p) {
+      $('calibStatus').innerHTML = `Your calibration: <b>${p.f.toFixed(2)}</b> bursts per syllable, the average of ${p.runs} run${p.runs > 1 ? 's' : ''} (${p.syl} syllables${p.runs > 1 ? `; runs ranged ${p.min.toFixed(2)}–${p.max.toFixed(2)}` : ''}). The meter divides what it hears by this.${p.runs > 1 && p.max - p.min > 0.2 ? ' The runs disagree quite a lot, so a few more will steady the average.' : ''}`;
+    } else if (legacy > 0.5 && legacy < 2) {
+      $('calibStatus').textContent = `Using your earlier single calibration of ${legacy.toFixed(2)}. Runs you add below are averaged and replace it.`;
+    } else {
+      $('calibStatus').textContent = 'Not calibrated yet, so every burst counts as one syllable. Do a few runs with different texts and speeds, add each one, and the meter uses their average.';
+    }
+    $('runsWrap').hidden = !list.length;
+    if (!list.length) return;
+    const bySpeed = {};
+    list.filter(x => x.on !== false).forEach(x => { const k = x.mode === 'guide' ? x.rate.toFixed(1) : 'own'; (bySpeed[k] ||= []).push(x); });
+    const t = $('runs');
+    t.innerHTML = `<thead><tr><th>Use</th><th>Text</th><th>Speed</th><th>Heard</th><th>Ratio</th><th></th></tr></thead><tbody></tbody>
+      <tfoot><tr><td></td><td colspan="3">Average</td><td class="num">${p ? p.f.toFixed(2) : '–'}</td><td></td></tr>
+      ${Object.keys(bySpeed).length > 1 ? `<tr class="by"><td></td><td colspan="5">By speed: ${Object.entries(bySpeed).map(([k, v]) => `${k === 'own' ? 'own pace' : k} → ${pooled(v).f.toFixed(2)}`).join(' · ')}</td></tr>` : ''}</tfoot>`;
+    for (const x of list) {
+      const tr = document.createElement('tr'); tr.className = x.on === false ? 'off' : '';
+      tr.innerHTML = `<td><input type="checkbox" aria-label="Use this run"></td><td></td><td class="num"></td><td class="num"></td><td class="num"></td><td><button type="button" class="x" aria-label="Delete this run">×</button></td>`;
+      const [c0, c1, c2, c3, c4] = tr.children;
+      c0.firstChild.checked = x.on !== false;
+      c1.textContent = textById(x.text).label.split(': ')[1];
+      c2.textContent = (x.mode === 'guide' ? '' : '~') + x.rate.toFixed(1);
+      c3.textContent = x.hits != null ? Math.round(x.hits / x.syl * 100) + '%' : '–';
+      c4.innerHTML = `${(x.bursts / x.syl).toFixed(2)}<small>${x.bursts} ÷ ${x.syl}</small>`;
+      c0.firstChild.onchange = e => { const l = runs(); l.find(y => y.id === x.id).on = e.target.checked; store.set('calRuns', l); showCalib(); };
+      tr.querySelector('.x').onclick = () => { store.set('calRuns', runs().filter(y => y.id !== x.id)); showCalib(); };
+      t.tBodies[0].append(tr);
+    }
+  }
+  function nextText() {
+    const i = TEXTS.findIndex(t => t.id === settings.text);
+    settings.text = TEXTS[(i + 1) % TEXTS.length].id; $('ctext').value = settings.text; store.set('ctext', settings.text);
+    $('ctext').dispatchEvent(new Event('change'));
   }
 
   // calibration: read a passage with a known syllable count; factor = bursts / syllables
   let cal = null;
-  const passage = () => PASSAGES[settings.lang] || PASSAGES.en;
+  const passage = () => textById(settings.text);
   function calReadout() {
     if (!cal) return;
     const now = performance.now(), secs = (now - cal.t0) / 1000;
@@ -491,7 +544,11 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('calibPanel').hidden = false; $('guidePanel').hidden = true; closeGuide();
     resetCalReadout();
   });
-  $('lang').addEventListener('change', () => { $('passage').textContent = passage().text; });
+  $('ctext').addEventListener('change', () => {
+    settings.text = $('ctext').value; store.set('ctext', settings.text);
+    $('passage').textContent = passage().text;
+    if (!cal) { $('calibResult').hidden = true; resetCalReadout(); }
+  });
   $('calibClose').addEventListener('click', () => {
     closeCal();
     $('calibPanel').hidden = true;
@@ -523,7 +580,6 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const p = passage(), n = c.n, f = n / p.syl;
     // reading time runs from the first burst to the last, so a late tap on Stop doesn't count
     const secs = n > 1 ? (c.last - c.first) / 1000 + 0.3 : (performance.now() - c.t0) / 1000;
-    const before = factor(), wasSet = store.get('factor', null) != null;
     const box = $('calibResult'); box.hidden = false;
     const ok = f >= 0.6 && f <= 1.6;
     box.innerHTML = `
@@ -534,15 +590,17 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
         <dt>Your reading pace</dt><dd>${(p.syl / secs).toFixed(1)} syl/s</dd>
         <dt class="key">Bursts per syllable</dt><dd class="key">${n} ÷ ${p.syl} = ${f.toFixed(2)}</dd>
       </dl>
-      ${ok ? `<p>${f > 1.02 ? `The detector heard ${Math.round((f - 1) * 100)}% more bursts than there are syllables` : f < 0.98 ? `The detector missed ${Math.round((1 - f) * 100)}% of the syllables` : 'The detector counted your syllables almost exactly'}. From now on the meter divides what it hears by <b>${f.toFixed(2)}</b> instead of ${before.toFixed(2)} (${wasSet ? 'your last calibration' : 'no correction'}). For example, 4.0 bursts a second counts as 4.0 ÷ ${f.toFixed(2)} = ${(4 / f).toFixed(1)} syllables a second.</p>
-            <div class="row"><button type="button" class="primary" id="calibSave">Use ${f.toFixed(2)}</button><button type="button" id="calibRetry">Try again</button></div>`
+      ${ok ? `<p>${f > 1.02 ? `The detector heard ${Math.round((f - 1) * 100)}% more bursts than there are syllables` : f < 0.98 ? `The detector missed ${Math.round((1 - f) * 100)}% of the syllables` : 'The detector counted your syllables almost exactly'}. Add this run to your average if it went smoothly.</p>
+            <div class="row"><button type="button" class="primary" id="calibSave">Add to my average</button><button type="button" id="calibNext">Next text</button><button type="button" id="calibRetry">Try again</button></div>`
           : `<p class="warn">${f < 0.6 ? 'It heard far fewer bursts than the passage has syllables, so it missed a lot of your speech.' : 'It heard far more bursts than the passage has syllables, so it picked up other noise.'} Try again somewhere quiet, holding the phone about 30 cm from your mouth.</p>
             <div class="row"><button type="button" id="calibRetry">Try again</button></div>`}`;
-    if (ok) $('calibSave').onclick = () => {
-      store.set('factor', f); showCalib();
-      $('calibPanel').hidden = true;
-      $('calibStatus').textContent += ' Saved.';
-    };
+    if (ok) {
+      $('calibSave').onclick = () => {
+        addRun({ mode: 'own', text: p.id, rate: p.syl / secs, bursts: n, syl: p.syl });
+        $('calibSave').disabled = true; $('calibSave').textContent = 'Added';
+      };
+      $('calibNext').onclick = nextText;
+    }
     $('calibRetry').onclick = () => { box.hidden = true; resetCalReadout(); };
   }
 
@@ -554,7 +612,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const rate = Number($('guideRate').value), step = 1000 / rate;
     const spans = [], times = [];
     let t = 0;
-    for (const word of SYLLABIFIED[settings.lang].split(/\s+/)) {
+    for (const word of passage().s.split(/\s+/)) {
       const w = document.createElement('span'); w.className = 'w';
       const parts = word.split('-');
       parts.forEach(part => {
@@ -613,7 +671,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     resetGuide();
   });
   $('guideRate').addEventListener('change', resetGuide);
-  $('lang').addEventListener('change', () => { if (!$('guidePanel').hidden && !guide) resetGuide(); });
+  $('ctext').addEventListener('change', () => { if (!$('guidePanel').hidden && !guide) resetGuide(); });
   $('guideClose').addEventListener('click', () => { closeGuide(); $('guidePanel').hidden = true; });
   $('guideStart').addEventListener('click', async () => {
     if (guide) { closeGuide(); resetGuide(); $('guideStatus').textContent = 'Stopped. Tap Start to try again.'; return; }
@@ -678,9 +736,16 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
         <dt>Your delay behind the marker</dt><dd>${Math.max(0, m.offset)} ms</dd>
         <dt class="key">Bursts per syllable</dt><dd class="key">${bursts.length} ÷ ${n} = ${f.toFixed(2)}</dd>
       </dl>
-      <p>Missed syllables are usually short unstressed ones run into their neighbours, like the middle of “ev-ery-one”. Extra bursts are often breaths, or a long vowel heard twice. ${ok ? `Using ${f.toFixed(2)} as your calibration makes the meter divide what it hears by that number, so misses and extras balance out in the pace you see.` : 'The count is too far off to use as a calibration. Try again somewhere quiet, holding the phone about 30 cm from your mouth.'}</p>
-      <div class="row">${ok ? `<button type="button" class="primary" id="guideSave">Use ${f.toFixed(2)} as calibration</button>` : ''}<button type="button" id="guideRetry">Try again</button></div>`;
-    if (ok) $('guideSave').onclick = () => { store.set('factor', f); showCalib(); $('calibStatus').textContent += ' Saved.'; $('guideSave').disabled = true; $('guideSave').textContent = 'Saved'; };
+      <p>Missed syllables are usually short unstressed ones run into their neighbours, like the middle of “ev-ery-one”. Extra bursts are often breaths, or a long vowel heard twice. ${ok ? 'If you kept up with the marker, add this run to your average; the meter divides what it hears by the average, so misses and extras balance out in the pace you see.' : 'The count is too far off to use. Try again somewhere quiet, holding the phone about 30 cm from your mouth.'}</p>
+      <div class="row">${ok ? '<button type="button" class="primary" id="guideSave">Add to my average</button><button type="button" id="guideNext">Next text</button>' : ''}<button type="button" id="guideRetry">Try again</button></div>`;
+    if (ok) {
+      const t = passage();
+      $('guideSave').onclick = () => {
+        addRun({ mode: 'guide', text: t.id, rate: 1000 / g.step, bursts: bursts.length, syl: n, hits: m.hits });
+        $('guideSave').disabled = true; $('guideSave').textContent = 'Added';
+      };
+      $('guideNext').onclick = nextText;
+    }
     $('guideRetry').onclick = resetGuide;
   }
 
