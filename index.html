@@ -312,7 +312,7 @@ body.session #err { order: 4; }
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, pauses included</p>
+  <p class="note version">Version: 29 Oct 2026, settling in</p>
 </main>
 
 <script>
@@ -1228,8 +1228,8 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     let sps = null;
     if (settings.pauses) {
       const speak = span - pausedBetween(now - span, now);
-      if (elapsed > 4000 && speak >= 2000 && now - lastSylAt < W) sps = events.length / f / (speak / 1000);
-    } else if (elapsed > 4000 && now - lastSylAt < W) sps = events.length / f / (span / 1000);
+      if (elapsed >= W && speak >= 2000 && now - lastSylAt < W) sps = events.length / f / (speak / 1000);
+    } else if (elapsed >= W && now - lastSylAt < W) sps = events.length / f / (span / 1000);   // nothing until a full window has passed: the detector is still settling
     show(sps);
     $('windowNote').textContent = `· last ${settings.win} s` + (settings.pauses && silentRun >= 250 ? ' · pausing' : '');
     const avgBase = settings.pauses ? elapsed - pausedBetween(startedAt, now) : elapsed;
@@ -1253,7 +1253,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const readout = document.querySelector('.readout');
     if (sps === null) {
       $('wpm').textContent = '–';
-      $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : silentRun >= 250 ? 'Pausing…' : 'Waiting for speech…') : 'Tap Start';
+      $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < settings.win * 1000 ? 'Settling in…' : silentRun >= 250 ? 'Pausing…' : 'Waiting for speech…') : 'Tap Start';
       readout.style.removeProperty('--state'); $('light').style.removeProperty('--light'); $('light').classList.remove('lit');
       $('light').setAttribute('aria-label', $('verdict').textContent);
       $('marker').style.opacity = .25;
