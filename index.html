@@ -310,7 +310,7 @@ body.session #err { order: 4; }
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, session view</p>
+  <p class="note version">Version: 29 Oct 2026, faster</p>
 </main>
 
 <script>
@@ -402,7 +402,7 @@ body.session #err { order: 4; }
       const unit = it.unit;
       li.innerHTML = `
         <div class="rec-head"><b></b><span class="rec-meta"><span class="pace" style="--state:${state}"></span> · <span class="len"></span></span></div>
-        <audio controls preload="metadata"></audio>
+        <audio controls preload="none"></audio>
         <div class="rec-actions"><a class="dl">Download</a><button type="button" class="share" hidden>Share</button><button type="button" class="del">Delete</button></div>`;
       li.querySelector('b').textContent = when;
       li.querySelector('.pace').textContent = it.avg == null ? 'no pace' : it.artic != null ? `${it.speech.toFixed(1)} syl/s · ${it.artic.toFixed(1)} while speaking · ${Math.round(it.pauseShare * 100)}% pauses`
@@ -426,7 +426,7 @@ body.session #err { order: 4; }
         if (!confirm(`Delete the recording from ${when}?`)) return;
         await idb('readwrite', st => st.delete(it.id)); renderRecs();
       };
-      li.append(reportBox(it, when));
+      li.append(reportBox(it, when, items));
       if (it.transcript) {
         const det = document.createElement('details');
         det.innerHTML = '<summary>Transcript</summary><p></p>';
@@ -464,32 +464,38 @@ body.session #err { order: 4; }
     return { words: tokens.length, syl };
   }
 
-  // decode the recording, resample to 16 kHz mono, and cut it into WAV pieces of at most 5 minutes at quiet moments
-  async function wavPieces(blob, maxSec = 300) {
-    const ac = new AudioContext(); const buf = await ac.decodeAudioData(await blob.arrayBuffer()); ac.close();
-    const sr = 16000, off = new OfflineAudioContext(1, Math.ceil(buf.duration * sr), sr);
-    const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
-    const pcm = (await off.startRendering()).getChannelData(0), out = [];
+  // Decode the recording and resample it to 16 kHz mono (the browser does this off the main thread); a worker then
+  // cuts it into WAV pieces of at most 5 minutes at quiet moments and encodes them, so the page stays responsive.
+  const WAV_WORKER = `onmessage = e => {
+    const { pcm, sr, maxSec } = e.data, out = [];
     for (let start = 0; start < pcm.length;) {
       let end = Math.min(pcm.length, start + maxSec * sr);
       if (end < pcm.length) {
         let best = end, bestE = Infinity;
-        for (let p = end - 20 * sr; p < end - 800; p += 800) { let e = 0; for (let i = p; i < p + 800; i++) e += pcm[i] * pcm[i]; if (e < bestE) { bestE = e; best = p + 400; } }
+        for (let p = end - 20 * sr; p < end - 800; p += 800) { let en = 0; for (let i = p; i < p + 800; i++) en += pcm[i] * pcm[i]; if (en < bestE) { bestE = en; best = p + 400; } }
         end = best;
       }
-      out.push(wavBlob(pcm.subarray(start, end), sr)); start = end;
+      const x = pcm.subarray(start, end), b = new ArrayBuffer(44 + x.length * 2), v = new DataView(b);
+      const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+      str(0, 'RIFF'); v.setUint32(4, 36 + x.length * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true);
+      v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+      str(36, 'data'); v.setUint32(40, x.length * 2, true);
+      const s16 = new Int16Array(b, 44); for (let i = 0; i < x.length; i++) s16[i] = Math.max(-1, Math.min(1, x[i])) * 32767;
+      out.push(new FileReaderSync().readAsDataURL(new Blob([b], { type: 'audio/wav' })).split(',')[1]);
+      start = end;
     }
-    return out;
+    postMessage(out);
+  };`;
+  async function wavPieces(blob, maxSec = 300) {
+    const ac = new AudioContext(); const buf = await ac.decodeAudioData(await blob.arrayBuffer()); ac.close();
+    const sr = 16000, off = new OfflineAudioContext(1, Math.ceil(buf.duration * sr), sr);
+    const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+    const pcm = (await off.startRendering()).getChannelData(0).slice();
+    const url = URL.createObjectURL(new Blob([WAV_WORKER], { type: 'application/javascript' })), w = new Worker(url);
+    try {
+      return await new Promise((res, rej) => { w.onmessage = e => res(e.data); w.onerror = e => rej(new Error(e.message || 'Could not prepare the audio')); w.postMessage({ pcm, sr, maxSec }, [pcm.buffer]); });
+    } finally { w.terminate(); URL.revokeObjectURL(url); }
   }
-  function wavBlob(x, sr) {
-    const b = new ArrayBuffer(44 + x.length * 2), v = new DataView(b), str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
-    str(0, 'RIFF'); v.setUint32(4, 36 + x.length * 2, true); str(8, 'WAVE'); str(12, 'fmt '); v.setUint32(16, 16, true);
-    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-    str(36, 'data'); v.setUint32(40, x.length * 2, true);
-    for (let i = 0; i < x.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x[i])) * 32767, true);
-    return new Blob([b], { type: 'audio/wav' });
-  }
-  const toBase64 = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(',')[1]); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
 
   const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/';
   const PROMPT = 'Transcribe this speech recording word for word, exactly as spoken. Include every word, including repetitions, false starts and filler words such as "um" and "uh". Do not correct grammar, summarise or translate. Write numbers out in words as they were said (for example "twenty-one", not "21"). If there is no speech, give an empty transcript. Reply only with JSON of the form {"language": "two-letter code of the main language spoken", "transcript": "..."}.';
@@ -512,8 +518,8 @@ body.session #err { order: 4; }
     if (!ms.length) throw new Error('No Gemini Flash model is available to this key.');
     store.set('geminiModel', ms[0].name); return ms[0].name;
   }
-  async function transcribePiece(key, wav) {
-    const body = JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'audio/wav', data: await toBase64(wav) } }, { text: PROMPT }] }],
+  async function transcribePiece(key, wav64) {
+    const body = JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: 'audio/wav', data: wav64 } }, { text: PROMPT }] }],
                                   generationConfig: { temperature: 0, responseMimeType: 'application/json' } });
     for (let attempt = 0; attempt < 2; attempt++) {
       const model = await geminiModel(key);
@@ -558,7 +564,7 @@ body.session #err { order: 4; }
   // classify a rate against a range
   const verdictOf = (v, lo, hi) => v < lo ? 'slow' : v > hi ? 'fast' : 'good';
   const VERDICT = { slow: 'too slow', good: 'in range', fast: 'too fast' };
-  function reportBox(it, when) {
+  function reportBox(it, when, items) {
     const box = document.createElement('div');
     box.className = 'report-wrap';
     const status = checking.get(it.id) || '';
@@ -615,7 +621,7 @@ body.session #err { order: 4; }
     };
     // range suggestion: from this talk, and from every checked talk with the same pauses setting
     (async () => {
-      const all = (await idb('readonly', st => st.getAll())).filter(x => x.report && x.report.words && x.excl === it.excl && x.ms > 5000);
+      const all = items.filter(x => x.report && x.report.words && x.excl === it.excl && x.ms > 5000);
       const sW = all.reduce((a, x) => a + x.report.words, 0), sT = all.reduce((a, x) => a + x.report.syl, 0);
       const sMs = all.reduce((a, x) => a + x.ms, 0), sP = all.reduce((a, x) => a + (x.pauseShare || 0) * x.ms, 0);
       const one = [conv(settings.wlo, spw, p), conv(settings.whi, spw, p)];
@@ -692,7 +698,7 @@ class SyllableDetector {
     const s = this.s;
     this.floor += (s - this.floor) * (s < this.floor ? 0.3 : 0.0005);
     if (this.voice !== null) this.voice -= 0.002;   // forget your loudness slowly (0.2 dB a second)
-    const vc = this.voicing();
+    const vc = s > this.floor + 6 ? this.voicing() : 0;   // the voice test is the costly part; silence can't be a syllable
     this.vrun = vc === 1 ? this.vrun + 1 : 0;
     this.level = s - this.floor;
     // speaking or silent, for measuring pauses: silence sits close to the room's background level
