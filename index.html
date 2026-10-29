@@ -12,7 +12,7 @@
 /* Layout: one column, big pace status and band on top with the number small beneath, controls, session stats, trace and voice strip below */
 :root {
   --bg: #f3f4f1; --surface: #ffffff; --fg: #1d2420; --muted: #5d6862; --line: #d9ddd6;
-  --slow: #3f73b8; --good: #2e8a57; --fast: #c8502f; --accent: #2e8a57;
+  --slow: #3f73b8; --good: #2e8a57; --fast: #c8502f; --accent: #2e8a57; --pure: #12c24a;
   --display: "Fraunces", Georgia, serif;
   --body: "IBM Plex Sans", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -20,7 +20,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #14181f; --surface: #1c222b; --fg: #e8ebe6; --muted: #98a29c; --line: #2d3540;
-    --slow: #78a6e6; --good: #5cc48a; --fast: #ef8565; --accent: #5cc48a; color-scheme: dark; }
+    --slow: #78a6e6; --good: #5cc48a; --fast: #ef8565; --accent: #5cc48a; --pure: #19d655; color-scheme: dark; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -126,7 +126,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 body.session main > :not(.light):not(#traceBox):not(.controls):not(#err) { display: none !important; }
 body.session .light { display: flex; align-items: center; justify-content: center; order: 1; height: 38vh; min-height: 150px; border-radius: 18px; background: var(--light, var(--line)); transition: background-color .4s; }
 #timer { font: 600 clamp(3.5rem, 19vw, 6.5rem)/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); letter-spacing: -.02em; }
-.light.lit #timer { color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .35); }
+.light.lit #timer { color: #fff; text-shadow: 0 1px 4px rgb(0 0 0 / .45); }
 body.session #traceBox { order: 2; }
 body.session #traceBox .label { display: none; }
 body.session #trace { height: 30vh; min-height: 130px; }
@@ -1235,7 +1235,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   function lightColour(sps, B) {
     const mid = (B.lo + B.hi) / 2, half = (B.hi - B.lo) / 2;
     const k = Math.min(1, Math.abs(sps - mid) / (1.5 * half));
-    return `color-mix(in oklab, ${sps < mid ? 'var(--slow)' : 'var(--fast)'} ${Math.round(k * 100)}%, var(--good))`;
+    return `color-mix(in oklab, ${sps < mid ? 'var(--slow)' : 'var(--fast)'} ${Math.round(k * 100)}%, var(--pure))`;
   }
   function show(sps) {
     const readout = document.querySelector('.readout');
