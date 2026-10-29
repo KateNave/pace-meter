@@ -153,7 +153,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       <div id="marker"></div>
     </div>
     <div class="scale" id="scale"></div>
-    <div class="sub"><b id="wpm">–</b> syllables a second <span id="windowNote">· last 20 s</span></div>
+    <div class="sub"><b id="wpm">–</b> <span id="unitNote">syllables a second</span> <span id="windowNote">· last 20 s</span></div>
   </section>
 
   <p id="err" hidden></p>
@@ -191,7 +191,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
         <label>Too slow below <input type="number" id="lo" value="3.4" min="1" max="8" step="0.1" inputmode="decimal"></label>
         <label>Too fast above <input type="number" id="hi" value="4" min="1.5" max="9" step="0.1" inputmode="decimal"></label>
       </div>
-      <p class="note">Syllables a second. For comparison, university lectures average about 3.5 and TED talks about 4.0.</p>
+      <p class="note">Syllables a second with pauses included. For comparison, university lectures average about 3.5 and TED talks about 4.0, both with pauses included.</p>
       <div class="row">
         <label>Averaging window
           <select id="win">
@@ -211,9 +211,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </label>
       <p class="note">The filter ignores sounds that aren't voiced like speech (knocks, clicks, typing), pure tones (clinks, beeps) and voices much quieter than yours. Calibrate with the setting you'll use.</p>
       <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
-      <label class="check"><input type="checkbox" id="pauses"> Leave pauses out of the session average</label>
+      <label class="check"><input type="checkbox" id="pauses"> Leave out pauses (silences of 0.25 s or more)</label>
+      <div class="row" id="pshareRow"><label>Pauses to allow for (% of the time) <input type="number" id="pshare" value="15" min="0" max="60" step="1" inputmode="numeric"></label></div>
+      <p class="note" id="pauseNote"></p>
       <label class="check"><input type="checkbox" id="record" checked> Save a recording of each session</label>
-      <p class="note">The live number counts pauses, like the published figures for lectures and reading. Nothing you say leaves your phone.</p>
+      <p class="note">Nothing you say leaves your phone.</p>
       <div class="calib" id="calib">
         <div class="label">Calibrate to your voice</div>
         <p class="note" id="calOverview"></p>
@@ -268,7 +270,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 28 Oct 2026, calibration per filter</p>
+  <p class="note version">Version: 29 Oct 2026, pauses left out</p>
 </main>
 
 <script>
@@ -281,11 +283,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // settings
   const settings = { lo: store.get('lo3', 3.4), hi: store.get('hi3', 4), win: store.get('win', 20),
-                     text: store.get('ctext', 'en-pace'), sens: store.get('sens', 'normal'), buzz: store.get('buzz', true), pauses: store.get('pauses2', false), record: store.get('record', true) };
+                     text: store.get('ctext', 'en-pace'), sens: store.get('sens', 'normal'), buzz: store.get('buzz', true), pauses: store.get('pauses3', true), pshare: store.get('pshare', 15), record: store.get('record', true) };
   $('lo').value = settings.lo; $('hi').value = settings.hi; $('win').value = settings.win;
-  $('sens').value = settings.sens; $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('record').checked = settings.record;
-  const keys = { pauses: 'pauses2', lo: 'lo3', hi: 'hi3' };
-  for (const id of ['lo', 'hi', 'win', 'sens', 'buzz', 'pauses', 'record']) {
+  $('sens').value = settings.sens; $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('pshare').value = settings.pshare; $('record').checked = settings.record;
+  const keys = { pauses: 'pauses3', lo: 'lo3', hi: 'hi3' };
+  for (const id of ['lo', 'hi', 'win', 'sens', 'buzz', 'pauses', 'pshare', 'record']) {
     $(id).addEventListener('change', e => {
       const el = e.target;
       settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
@@ -295,15 +297,25 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     });
   }
 
+  // The range is set as a rate with pauses included. With pauses left out, the same target is a faster rate while speaking:
+  // rate while speaking = overall rate ÷ (1 − share of time spent pausing).
+  function band() {
+    const k = settings.pauses ? 1 / (1 - Math.min(60, Math.max(0, settings.pshare)) / 100) : 1;
+    return { lo: settings.lo * k, hi: settings.hi * k };
+  }
   // scale for the band
-  const MIN = 2, MAX = 5.5;
+  const MIN = 2, MAX = 6;
   const pct = v => Math.max(0, Math.min(100, (v - MIN) / (MAX - MIN) * 100));
   function drawScale() {
-    const [s, g, f] = $('band').children;
-    s.style.width = pct(settings.lo) + '%';
-    g.style.width = (pct(settings.hi) - pct(settings.lo)) + '%';
-    f.style.width = (100 - pct(settings.hi)) + '%';
-    $('scale').innerHTML = [MIN, settings.lo, settings.hi, MAX]
+    const [s, g, f] = $('band').children, B = band();
+    s.style.width = pct(B.lo) + '%';
+    g.style.width = (pct(B.hi) - pct(B.lo)) + '%';
+    f.style.width = (100 - pct(B.hi)) + '%';
+    $('pshareRow').hidden = $('pauseNote').hidden = !settings.pauses;
+    const k = 1 - settings.pshare / 100;
+    $('pauseNote').textContent = `The range above is your pace with pauses included. Leaving pauses out, the meter measures how fast you talk while speaking, and the same range becomes ${settings.lo.toFixed(1)} ÷ ${k.toFixed(2)} = ${B.lo.toFixed(1)} to ${settings.hi.toFixed(1)} ÷ ${k.toFixed(2)} = ${B.hi.toFixed(1)} syllables a second, assuming you pause ${settings.pshare}% of the time. Each saved recording shows how much you actually paused.`;
+    $('unitNote').textContent = settings.pauses ? 'syllables a second while speaking' : 'syllables a second';
+    $('scale').innerHTML = [MIN, B.lo, B.hi, MAX]
       .map(v => `<span style="left:${pct(v)}%">${v.toFixed(1)}</span>`).join('');
     $('scale').firstChild.style.transform = 'none';
     $('scale').lastChild.style.transform = 'translateX(-100%)';
@@ -348,7 +360,8 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
         <audio controls preload="metadata"></audio>
         <div class="rec-actions"><a class="dl">Download</a><button type="button" class="share" hidden>Share</button><button type="button" class="del">Delete</button></div>`;
       li.querySelector('b').textContent = when;
-      li.querySelector('.pace').textContent = it.avg == null ? 'no pace' : unit === 'sps' ? `${it.avg.toFixed(1)} syllables/s avg`
+      li.querySelector('.pace').textContent = it.avg == null ? 'no pace' : it.artic != null ? `${it.speech.toFixed(1)} syl/s · ${it.artic.toFixed(1)} while speaking · ${Math.round(it.pauseShare * 100)}% pauses`
+        : unit === 'sps' ? `${it.avg.toFixed(1)} syllables/s avg`
         : unit === 'spm' ? `${it.avg} syllables/min avg` : `${it.avg} wpm avg`;
       li.querySelector('.len').textContent = unit ? `${fmtDur(it.ms)} · ${it.syllables} syllables` : `${fmtDur(it.ms)} · ${it.words} words`;
       const au = li.querySelector('audio'); au.src = url;
@@ -393,6 +406,9 @@ class SyllableDetector {
     this.floorMargin = opt.floorMargin ?? 10;   // dB above the room's background level
     this.refMargin = opt.refMargin ?? 16;       // dB below the typical loudness of your recent syllables
     this.minVoiced = opt.minVoiced ?? 3;        // frames (10 ms each) of continuous voicing a syllable needs
+    this.silenceDb = opt.silenceDb ?? 8;        // sound needs at least this many dB above the background,
+    this.silenceShare = opt.silenceShare ?? 0.2; // or this share of the way from the background up to your voice
+    this.actCount = 0;
     this.hop = Math.round(sampleRate / 100);
     this.D = Math.max(1, Math.round(sampleRate / 8000));
     this.ring = new Float32Array(240); this.ri = 0; this.dc = 0; this.buf = new Float32Array(240);
@@ -437,6 +453,9 @@ class SyllableDetector {
     const vc = this.voicing();
     this.vrun = vc === 1 ? this.vrun + 1 : 0;
     this.level = s - this.floor;
+    // speaking or silent, for measuring pauses: silence sits close to the room's background level
+    this.active = s > this.floor + (this.voice === null ? this.silenceDb : Math.max(this.silenceDb, this.silenceShare * (this.voice - this.floor)));
+    if (this.active) this.actCount++;
     const DIP = 2;
     if (this.rising) {
       // voicing must hold at the loudest moment itself, so a knock landing on faint background speech doesn't count
@@ -471,7 +490,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       this.out.length = 0; this.rej.length = 0; this.d.push(ch, this.out, this.rej);
       for (let i = 0; i < this.out.length; i++) this.port.postMessage({ syl: 1 });
       for (let i = 0; i < this.rej.length; i++) this.port.postMessage({ rej: 1 });
-      if (this.d.t - this.f >= 3) { this.f = this.d.t; this.port.postMessage({ level: this.d.level || 0 }); }
+      if (this.d.t - this.f >= 3) { this.f = this.d.t; this.port.postMessage({ level: this.d.level || 0, act: this.d.actCount }); this.d.actCount = 0; }
     }
     return true;
   }
@@ -536,7 +555,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const mute = new GainNode(ctx, { gain: 0 });
     src.connect(hp).connect(lp1).connect(lp2).connect(node).connect(mute).connect(ctx.destination);
     node.port.postMessage(SENS[sens] || SENS.normal);
-    node.port.onmessage = e => e.data.syl ? onSyl() : e.data.rej ? onRej && onRej() : onLevel(e.data.level);
+    node.port.onmessage = e => e.data.syl ? onSyl() : e.data.rej ? onRej && onRej() : onLevel(e.data.level, e.data.act);
     await ctx.resume();
     return ctx;
   }
@@ -906,7 +925,20 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   let pausedAt = 0, pausedTotal = 0;
   const clock = () => performance.now() - pausedTotal;
   let events = [];            // {t, n}: syllables with timestamps
-  let lastSylAt = 0, speakingMs = 0, lastTick = 0;
+  let lastSylAt = 0, lastTick = 0;
+  let pauseList = [], silentRun = 0;   // pauses of 0.25 s or more, [start, end] on the session clock
+  function onActivity(act) {
+    if (!running) return;
+    if (!act) { silentRun += 30; return; }
+    if (silentRun >= 250) { const now = clock(); pauseList.push([now - silentRun, now]); }
+    silentRun = 0;
+  }
+  function pausedBetween(a, b) {
+    let p = 0;
+    for (const [s, e] of pauseList) p += Math.max(0, Math.min(e, b) - Math.max(s, a));
+    if (silentRun >= 250) p += Math.max(0, b - Math.max(clock() - silentRun, a));
+    return p;
+  }
   let trace = [];             // {t, sps}
   let lastBuzz = 0;
   let stream = null, recorder = null, chunks = [];   // the session's audio recording
@@ -915,17 +947,20 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 
   function tick() {
     const now = clock();
-    const dt = now - lastTick; lastTick = now;
-    if (now - lastSylAt < 1500) speakingMs += dt;   // speaking if a syllable came in the last 1.5 s
+    lastTick = now;
     const W = settings.win * 1000;
     events = events.filter(t => now - t < W);
     const elapsed = now - startedAt;
     const span = Math.min(W, elapsed);
     const total = syllables();
     let sps = null;
-    if (elapsed > 4000 && now - lastSylAt < W) sps = events.length / f / (span / 1000);
+    if (settings.pauses) {
+      const speak = span - pausedBetween(now - span, now);
+      if (elapsed > 4000 && speak >= 2000 && now - lastSylAt < W) sps = events.length / f / (speak / 1000);
+    } else if (elapsed > 4000 && now - lastSylAt < W) sps = events.length / f / (span / 1000);
     show(sps);
-    const avgBase = settings.pauses ? speakingMs : elapsed;
+    $('windowNote').textContent = `· last ${settings.win} s` + (settings.pauses && silentRun >= 250 ? ' · pausing' : '');
+    const avgBase = settings.pauses ? elapsed - pausedBetween(startedAt, now) : elapsed;
     $('avg').textContent = total > 10 && avgBase > 5000 ? (total / (avgBase / 1000)).toFixed(1) : '–';
     $('words').textContent = Math.round(total);
     const s = Math.floor(elapsed / 1000);
@@ -938,7 +973,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const readout = document.querySelector('.readout');
     if (sps === null) {
       $('wpm').textContent = '–';
-      $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : 'Waiting for speech…') : 'Tap Start';
+      $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : silentRun >= 250 ? 'Pausing…' : 'Waiting for speech…') : 'Tap Start';
       readout.style.removeProperty('--state');
       $('marker').style.opacity = .25;
       return;
@@ -946,13 +981,13 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('wpm').textContent = sps.toFixed(1);
     $('marker').style.opacity = 1;
     $('marker').style.left = pct(sps) + '%';
-    let state, label;
-    if (sps < settings.lo) { state = 'var(--slow)'; label = 'A bit slow'; }
-    else if (sps > settings.hi) { state = 'var(--fast)'; label = 'Too fast'; }
+    let state, label; const B = band();
+    if (sps < B.lo) { state = 'var(--slow)'; label = 'A bit slow'; }
+    else if (sps > B.hi) { state = 'var(--fast)'; label = 'Too fast'; }
     else { state = 'var(--good)'; label = 'Good pace'; }
     readout.style.setProperty('--state', state);
     $('verdict').textContent = label;
-    if (sps > settings.hi && settings.buzz && navigator.vibrate && performance.now() - lastBuzz > 6000) {
+    if (sps > B.hi && settings.buzz && navigator.vibrate && performance.now() - lastBuzz > 6000) {
       navigator.vibrate([120, 80, 120]); lastBuzz = performance.now();
     }
   }
@@ -965,10 +1000,11 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     const css = getComputedStyle(document.documentElement);
     const col = n => css.getPropertyValue(n).trim();
     const pad = 8, y = v => h - pad - (Math.max(MIN, Math.min(MAX, v)) - MIN) / (MAX - MIN) * (h - 2 * pad);
+    const B = band();
     g.fillStyle = col('--good'); g.globalAlpha = .12;
-    g.fillRect(0, y(settings.hi), w, y(settings.lo) - y(settings.hi)); g.globalAlpha = 1;
+    g.fillRect(0, y(B.hi), w, y(B.lo) - y(B.hi)); g.globalAlpha = 1;
     g.fillStyle = col('--muted'); g.font = '11px ' + col('--mono');
-    g.fillText(settings.hi.toFixed(1), 4, y(settings.hi) - 3); g.fillText(settings.lo.toFixed(1), 4, y(settings.lo) + 12);
+    g.fillText(B.hi.toFixed(1), 4, y(B.hi) - 3); g.fillText(B.lo.toFixed(1), 4, y(B.lo) + 12);
     if (trace.length < 2) return;
     const t1 = Math.max(trace[trace.length - 1].t, 60000);
     const x = t => 30 + (t / t1) * (w - 36);
@@ -976,7 +1012,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     trace.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.sps)) : g.moveTo(x(p.t), y(p.sps)));
     g.stroke();
     const last = trace[trace.length - 1];
-    g.fillStyle = last.sps > settings.hi ? col('--fast') : last.sps < settings.lo ? col('--slow') : col('--good');
+    g.fillStyle = last.sps > B.hi ? col('--fast') : last.sps < B.lo ? col('--slow') : col('--good');
     g.beginPath(); g.arc(x(last.t), y(last.sps), 4, 0, 7); g.fill();
   }
 
@@ -1012,13 +1048,13 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 
   async function start() {
     $('err').hidden = true;
-    events = []; trace = []; bursts = 0; f = factor(); levels = []; ticks = []; rejs = [];
+    events = []; trace = []; bursts = 0; f = factor(); levels = []; ticks = []; rejs = []; pauseList = []; silentRun = 0;
     pausedTotal = 0; paused = false;
     $('go').disabled = true;
     try {
       stream = await getStream();
       if (settings.record) startRecorder();
-      sound = await openSound(stream, onSyllable, l => levels.push({ t: clock(), l }), () => running && rejs.push(clock()));
+      sound = await openSound(stream, onSyllable, (l, act) => { levels.push({ t: clock(), l }); onActivity(act); }, () => running && rejs.push(clock()));
     } catch (e) {
       $('go').disabled = false; dropRecording();
       showErr(e.name === 'NotAllowedError' ? 'Microphone access was blocked. Tap the lock icon in the address bar, allow the microphone, then tap Start again.'
@@ -1026,7 +1062,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
       return;
     }
     $('go').disabled = false;
-    speakingMs = 0; lastSylAt = 0; startedAt = lastTick = clock();
+    lastSylAt = 0; startedAt = lastTick = clock();
     listen();
   }
 
@@ -1063,7 +1099,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
 
   function resume() {
     pausedTotal += performance.now() - pausedAt;
-    paused = false; lastTick = clock();
+    paused = false; lastTick = clock(); silentRun = 0;
     $('err').hidden = true;
     stream?.getAudioTracks().forEach(t => t.enabled = true);
     if (recorder?.state === 'paused') recorder.resume();
@@ -1102,10 +1138,11 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   function saveRecording() {
     if (!recorder) return;
     const r = recorder, s = stream;
-    const ms = clock() - startedAt, total = syllables();
-    const base = settings.pauses ? speakingMs : ms;
-    const meta = { id: Date.now(), ms, unit: 'sps', syllables: Math.round(total), avg: total > 10 && base > 5000 ? total / (base / 1000) : null,
-                   lo: settings.lo, hi: settings.hi };
+    const ms = clock() - startedAt, total = syllables(), pz = pausedBetween(startedAt, clock()), B = band();
+    const ok = total > 10 && ms > 5000;
+    const speech = ok ? total / (ms / 1000) : null, artic = ok && ms - pz > 3000 ? total / ((ms - pz) / 1000) : null;
+    const meta = { id: Date.now(), ms, unit: 'sps', syllables: Math.round(total), avg: settings.pauses ? artic : speech,
+                   speech, artic, pauseShare: ms ? pz / ms : null, excl: settings.pauses, lo: B.lo, hi: B.hi };
     recorder = null; stream = null;
     $('recNote').textContent = 'Saving recording…';
     r.onstop = async () => {
