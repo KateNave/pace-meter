@@ -187,11 +187,16 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   <details>
     <summary>Settings</summary>
     <div class="settings">
-      <div class="row">
+      <div class="label" id="bandLabel"></div>
+      <div class="row" id="bandIncl">
         <label>Too slow below <input type="number" id="lo" value="3.4" min="1" max="8" step="0.1" inputmode="decimal"></label>
         <label>Too fast above <input type="number" id="hi" value="4" min="1.5" max="9" step="0.1" inputmode="decimal"></label>
       </div>
-      <p class="note">Syllables a second with pauses included. For comparison, university lectures average about 3.5 and TED talks about 4.0, both with pauses included.</p>
+      <div class="row" id="bandExcl">
+        <label>Too slow below <input type="number" id="loP" value="3.7" min="1" max="9" step="0.1" inputmode="decimal"></label>
+        <label>Too fast above <input type="number" id="hiP" value="4.4" min="1.5" max="10" step="0.1" inputmode="decimal"></label>
+      </div>
+      <p class="note" id="bandNote"></p>
       <div class="row">
         <label>Averaging window
           <select id="win">
@@ -212,8 +217,6 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       <p class="note">The filter ignores sounds that aren't voiced like speech (knocks, clicks, typing), pure tones (clinks, beeps) and voices much quieter than yours. Calibrate with the setting you'll use.</p>
       <label class="check"><input type="checkbox" id="buzz" checked> Vibrate when I go too fast</label>
       <label class="check"><input type="checkbox" id="pauses"> Leave out pauses (silences of 0.25 s or more)</label>
-      <div class="row" id="pshareRow"><label>Pauses to allow for (% of the time) <input type="number" id="pshare" value="15" min="0" max="60" step="1" inputmode="numeric"></label></div>
-      <p class="note" id="pauseNote"></p>
       <label class="check"><input type="checkbox" id="record" checked> Save a recording of each session</label>
       <p class="note">Nothing you say leaves your phone.</p>
       <div class="calib" id="calib">
@@ -270,7 +273,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, pauses left out</p>
+  <p class="note version">Version: 29 Oct 2026, while-speaking range</p>
 </main>
 
 <script>
@@ -283,25 +286,24 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 
   // settings
   const settings = { lo: store.get('lo3', 3.4), hi: store.get('hi3', 4), win: store.get('win', 20),
-                     text: store.get('ctext', 'en-pace'), sens: store.get('sens', 'normal'), buzz: store.get('buzz', true), pauses: store.get('pauses3', true), pshare: store.get('pshare', 15), record: store.get('record', true) };
+                     text: store.get('ctext', 'en-pace'), sens: store.get('sens', 'normal'), buzz: store.get('buzz', true), pauses: store.get('pauses3', true), loP: store.get('loP', 3.7), hiP: store.get('hiP', 4.4), record: store.get('record', true) };
   $('lo').value = settings.lo; $('hi').value = settings.hi; $('win').value = settings.win;
-  $('sens').value = settings.sens; $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('pshare').value = settings.pshare; $('record').checked = settings.record;
+  $('sens').value = settings.sens; $('buzz').checked = settings.buzz; $('pauses').checked = settings.pauses; $('loP').value = settings.loP; $('hiP').value = settings.hiP; $('record').checked = settings.record;
   const keys = { pauses: 'pauses3', lo: 'lo3', hi: 'hi3' };
-  for (const id of ['lo', 'hi', 'win', 'sens', 'buzz', 'pauses', 'pshare', 'record']) {
+  for (const id of ['lo', 'hi', 'loP', 'hiP', 'win', 'sens', 'buzz', 'pauses', 'record']) {
     $(id).addEventListener('change', e => {
       const el = e.target;
       settings[id] = el.type === 'checkbox' ? el.checked : (el.type === 'number' || id === 'win') ? Number(el.value) : el.value;
       if (settings.lo >= settings.hi) { settings.hi = +(settings.lo + 0.3).toFixed(1); $('hi').value = settings.hi; store.set('hi3', settings.hi); }
+      if (settings.loP >= settings.hiP) { settings.hiP = +(settings.loP + 0.3).toFixed(1); $('hiP').value = settings.hiP; store.set('hiP', settings.hiP); }
       store.set(keys[id] || id, settings[id]);
       drawScale(); showCalib();
     });
   }
 
-  // The range is set as a rate with pauses included. With pauses left out, the same target is a faster rate while speaking:
-  // rate while speaking = overall rate ÷ (1 − share of time spent pausing).
+  // Two target ranges: one for the rate with pauses included, one for the rate while speaking (pauses left out)
   function band() {
-    const k = settings.pauses ? 1 / (1 - Math.min(60, Math.max(0, settings.pshare)) / 100) : 1;
-    return { lo: settings.lo * k, hi: settings.hi * k };
+    return settings.pauses ? { lo: settings.loP, hi: settings.hiP } : { lo: settings.lo, hi: settings.hi };
   }
   // scale for the band
   const MIN = 2, MAX = 6;
@@ -311,9 +313,11 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     s.style.width = pct(B.lo) + '%';
     g.style.width = (pct(B.hi) - pct(B.lo)) + '%';
     f.style.width = (100 - pct(B.hi)) + '%';
-    $('pshareRow').hidden = $('pauseNote').hidden = !settings.pauses;
-    const k = 1 - settings.pshare / 100;
-    $('pauseNote').textContent = `The range above is your pace with pauses included. Leaving pauses out, the meter measures how fast you talk while speaking, and the same range becomes ${settings.lo.toFixed(1)} ÷ ${k.toFixed(2)} = ${B.lo.toFixed(1)} to ${settings.hi.toFixed(1)} ÷ ${k.toFixed(2)} = ${B.hi.toFixed(1)} syllables a second, assuming you pause ${settings.pshare}% of the time. Each saved recording shows how much you actually paused.`;
+    $('bandIncl').hidden = settings.pauses; $('bandExcl').hidden = !settings.pauses;
+    $('bandLabel').textContent = settings.pauses ? 'Target while speaking (pauses left out)' : 'Target with pauses included';
+    $('bandNote').textContent = settings.pauses
+      ? 'Syllables a second while you are actually talking; silences of 0.25 s or more are left out. Your separate range for pace with pauses included is kept for when you turn “Leave out pauses” off.'
+      : 'Syllables a second with pauses included. For comparison, university lectures average about 3.5 and TED talks about 4.0, both with pauses included.';
     $('unitNote').textContent = settings.pauses ? 'syllables a second while speaking' : 'syllables a second';
     $('scale').innerHTML = [MIN, B.lo, B.hi, MAX]
       .map(v => `<span style="left:${pct(v)}%">${v.toFixed(1)}</span>`).join('');
