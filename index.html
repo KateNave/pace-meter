@@ -124,7 +124,9 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 /* while a session runs: only the colour light, the pace line and the controls */
 .light { display: none; }
 body.session main > :not(.light):not(#traceBox):not(.controls):not(#err) { display: none !important; }
-body.session .light { display: block; order: 1; height: 38vh; min-height: 150px; border-radius: 18px; background: var(--light, var(--line)); transition: background-color .4s; }
+body.session .light { display: flex; align-items: center; justify-content: center; order: 1; height: 38vh; min-height: 150px; border-radius: 18px; background: var(--light, var(--line)); transition: background-color .4s; }
+#timer { font: 600 clamp(3.5rem, 19vw, 6.5rem)/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); letter-spacing: -.02em; }
+.light.lit #timer { color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .35); }
 body.session #traceBox { order: 2; }
 body.session #traceBox .label { display: none; }
 body.session #trace { height: 30vh; min-height: 130px; }
@@ -181,7 +183,7 @@ body.session #err { order: 4; }
   </section>
 
   <p id="err" hidden></p>
-  <div id="light" class="light" role="img" aria-label="Pace"></div>
+  <div id="light" class="light" role="img" aria-label="Pace"><span id="timer" aria-hidden="true">0:00</span></div>
   <div class="controls">
     <button class="go" id="go" type="button">Start</button>
     <button class="end" id="end" type="button" hidden>Stop</button>
@@ -310,7 +312,7 @@ body.session #err { order: 4; }
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, Glasgow calibration</p>
+  <p class="note version">Version: 29 Oct 2026, timer</p>
 </main>
 
 <script>
@@ -1223,16 +1225,24 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     $('words').textContent = Math.round(total);
     const s = Math.floor(elapsed / 1000);
     $('time').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    $('timer').textContent = s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : $('time').textContent;
     if (sps !== null && (!trace.length || elapsed - trace[trace.length - 1].t > 1000)) trace.push({ t: elapsed, sps });
     drawTrace();
   }
 
+  // Pure green at the middle of your range (your target pace), shading towards blue below and red above:
+  // two-thirds of the way there at the edges of the range, fully blue or red half a range-width beyond them.
+  function lightColour(sps, B) {
+    const mid = (B.lo + B.hi) / 2, half = (B.hi - B.lo) / 2;
+    const k = Math.min(1, Math.abs(sps - mid) / (1.5 * half));
+    return `color-mix(in oklab, ${sps < mid ? 'var(--slow)' : 'var(--fast)'} ${Math.round(k * 100)}%, var(--good))`;
+  }
   function show(sps) {
     const readout = document.querySelector('.readout');
     if (sps === null) {
       $('wpm').textContent = '–';
       $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : silentRun >= 250 ? 'Pausing…' : 'Waiting for speech…') : 'Tap Start';
-      readout.style.removeProperty('--state'); $('light').style.removeProperty('--light');
+      readout.style.removeProperty('--state'); $('light').style.removeProperty('--light'); $('light').classList.remove('lit');
       $('light').setAttribute('aria-label', $('verdict').textContent);
       $('marker').style.opacity = .25;
       return;
@@ -1244,7 +1254,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (sps < B.lo) { state = 'var(--slow)'; label = 'A bit slow'; }
     else if (sps > B.hi) { state = 'var(--fast)'; label = 'Too fast'; }
     else { state = 'var(--good)'; label = 'Good pace'; }
-    readout.style.setProperty('--state', state); $('light').style.setProperty('--light', state);
+    readout.style.setProperty('--state', state); $('light').style.setProperty('--light', lightColour(sps, B)); $('light').classList.add('lit');
     $('verdict').textContent = label; $('light').setAttribute('aria-label', label);
     if (sps > B.hi && settings.buzz && navigator.vibrate && performance.now() - lastBuzz > 6000) {
       navigator.vibrate([120, 80, 120]); lastBuzz = performance.now();
