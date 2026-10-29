@@ -310,7 +310,7 @@ body.session #err { order: 4; }
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, faster</p>
+  <p class="note version">Version: 29 Oct 2026, Glasgow calibration</p>
 </main>
 
 <script>
@@ -776,6 +776,16 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   }
   function addRun(run) {
     const list = runs(); list.push({ id: Date.now(), on: true, det: DET, sens: calSens, ...run }); store.set('calRuns', list); showCalib(); showChecks();
+  }
+  // One-off settings from the analysis of the 22-minute Glasgow talk (29 Oct 2026), applied once in each browser:
+  // Normal calibration 4,157 bursts / 5,141 transcribed syllables = 0.81 (earlier Normal runs kept but unticked), and a
+  // while-speaking range of 4.8-5.6 syllables a second, about 132-154 words a minute at that talk's 1.70 syllables per word and 22% pauses.
+  if (!store.get('applied-2026-10-29', false)) {
+    const l = runs().map(x => x.det === DET && sensOf(x) === 'normal' ? { ...x, on: false } : x);
+    l.push({ id: Date.now(), on: true, det: DET, sens: 'normal', mode: 'talk', text: 'talk', label: 'Glasgow talk (29 Oct)', rate: 5141 / 1358.4, bursts: 4157, syl: 5141 });
+    store.set('calRuns', l);
+    settings.loP = 4.8; settings.hiP = 5.6; store.set('loP', 4.8); store.set('hiP', 5.6); $('loP').value = 4.8; $('hiP').value = 5.6;
+    store.set('applied-2026-10-29', true);
   }
   // detected bursts per real syllable for a filter setting; 1 until calibrated
   const factorFor = sens => { const p = pooled(runsFor(sens)); return p ? p.f : 1; };
