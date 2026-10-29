@@ -121,6 +121,15 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
 .guide .syl.now.hit, .guide .syl.now.miss { color: #fff; background: var(--accent); }
 #guideVoice { height: 56px; }
 .version { text-align: center; }
+/* while a session runs: only the colour light, the pace line and the controls */
+.light { display: none; }
+body.session main > :not(.light):not(#traceBox):not(.controls):not(#err) { display: none !important; }
+body.session .light { display: block; order: 1; height: 38vh; min-height: 150px; border-radius: 18px; background: var(--light, var(--line)); transition: background-color .4s; }
+body.session #traceBox { order: 2; }
+body.session #traceBox .label { display: none; }
+body.session #trace { height: 30vh; min-height: 130px; }
+body.session .controls { order: 3; }
+body.session #err { order: 4; }
 #gem input[type=password] { font: 16px var(--mono); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); width: 100%; }
 #gem a { color: var(--slow); }
 .report { display: grid; gap: 10px; background: var(--bg); border-radius: 8px; padding: 12px 14px; }
@@ -172,6 +181,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
   </section>
 
   <p id="err" hidden></p>
+  <div id="light" class="light" role="img" aria-label="Pace"></div>
   <div class="controls">
     <button class="go" id="go" type="button">Start</button>
     <button class="end" id="end" type="button" hidden>Stop</button>
@@ -183,7 +193,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
     <div><small>Time</small><b id="time">0:00</b></div>
   </div>
 
-  <div>
+  <div id="traceBox">
     <div class="label" style="margin-bottom:6px">Pace over this session</div>
     <canvas id="trace" aria-label="Syllables a second over time"></canvas>
   </div>
@@ -300,7 +310,7 @@ select, input[type=number] { font: 16px var(--body); padding: 8px 10px; border-r
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, transcript check</p>
+  <p class="note version">Version: 29 Oct 2026, session view</p>
 </main>
 
 <script>
@@ -1206,7 +1216,8 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (sps === null) {
       $('wpm').textContent = '–';
       $('verdict').textContent = paused ? 'Paused' : running ? (clock() - startedAt < 4000 ? 'Listening…' : silentRun >= 250 ? 'Pausing…' : 'Waiting for speech…') : 'Tap Start';
-      readout.style.removeProperty('--state');
+      readout.style.removeProperty('--state'); $('light').style.removeProperty('--light');
+      $('light').setAttribute('aria-label', $('verdict').textContent);
       $('marker').style.opacity = .25;
       return;
     }
@@ -1217,8 +1228,8 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (sps < B.lo) { state = 'var(--slow)'; label = 'A bit slow'; }
     else if (sps > B.hi) { state = 'var(--fast)'; label = 'Too fast'; }
     else { state = 'var(--good)'; label = 'Good pace'; }
-    readout.style.setProperty('--state', state);
-    $('verdict').textContent = label;
+    readout.style.setProperty('--state', state); $('light').style.setProperty('--light', state);
+    $('verdict').textContent = label; $('light').setAttribute('aria-label', label);
     if (sps > B.hi && settings.buzz && navigator.vibrate && performance.now() - lastBuzz > 6000) {
       navigator.vibrate([120, 80, 120]); lastBuzz = performance.now();
     }
@@ -1227,12 +1238,14 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   function drawTrace() {
     const c = $('trace'), dpr = window.devicePixelRatio || 1;
     const w = c.clientWidth, h = c.clientHeight;
-    if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
     const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
     const css = getComputedStyle(document.documentElement);
     const col = n => css.getPropertyValue(n).trim();
-    const pad = 8, y = v => h - pad - (Math.max(MIN, Math.min(MAX, v)) - MIN) / (MAX - MIN) * (h - 2 * pad);
-    const B = band();
+    const B = band(), zoom = document.body.classList.contains('session');
+    // during a session the plot spans a little either side of your range, so the band fills the middle
+    const y0 = zoom ? Math.max(0, B.lo - 1.2) : MIN, y1 = zoom ? B.hi + 1.2 : MAX;
+    const pad = 8, y = v => h - pad - (Math.max(y0, Math.min(y1, v)) - y0) / (y1 - y0) * (h - 2 * pad);
     g.fillStyle = col('--good'); g.globalAlpha = .12;
     g.fillRect(0, y(B.hi), w, y(B.lo) - y(B.hi)); g.globalAlpha = 1;
     g.fillStyle = col('--muted'); g.font = '11px ' + col('--mono');
@@ -1240,11 +1253,21 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (trace.length < 2) return;
     const t1 = Math.max(trace[trace.length - 1].t, 60000);
     const x = t => 30 + (t / t1) * (w - 36);
-    g.strokeStyle = col('--fg'); g.lineWidth = 2; g.lineJoin = 'round'; g.beginPath();
-    trace.forEach((p, i) => i ? g.lineTo(x(p.t), y(p.sps)) : g.moveTo(x(p.t), y(p.sps)));
-    g.stroke();
+    // each stretch of line is blue below the range, green in it, red above, split exactly where it crosses a limit
+    const colour = v => v > B.hi ? col('--fast') : v < B.lo ? col('--slow') : col('--good');
+    g.lineWidth = document.body.classList.contains('session') ? 3 : 2; g.lineCap = 'round';
+    for (let i = 1; i < trace.length; i++) {
+      const a = trace[i - 1], b = trace[i], cuts = [0, 1];
+      for (const lim of [B.lo, B.hi]) { const k = (lim - a.sps) / (b.sps - a.sps); if (k > 0 && k < 1) cuts.push(k); }
+      cuts.sort((m, n) => m - n);
+      for (let j = 1; j < cuts.length; j++) {
+        const k0 = cuts[j - 1], k1 = cuts[j], at = k => ({ t: a.t + (b.t - a.t) * k, v: a.sps + (b.sps - a.sps) * k });
+        const p0 = at(k0), p1 = at(k1);
+        g.strokeStyle = colour(at((k0 + k1) / 2).v); g.beginPath(); g.moveTo(x(p0.t), y(p0.v)); g.lineTo(x(p1.t), y(p1.v)); g.stroke();
+      }
+    }
     const last = trace[trace.length - 1];
-    g.fillStyle = last.sps > B.hi ? col('--fast') : last.sps < B.lo ? col('--slow') : col('--good');
+    g.fillStyle = colour(last.sps);
     g.beginPath(); g.arc(x(last.t), y(last.sps), 4, 0, 7); g.fill();
   }
 
@@ -1301,7 +1324,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
   async function listen() {
     running = true;
     cancelAnimationFrame(raf); raf = requestAnimationFrame(drawVoice);
-    document.body.classList.add('listening'); document.body.classList.remove('paused');
+    document.body.classList.add('listening', 'session'); document.body.classList.remove('paused');
     $('statusText').textContent = 'Listening';
     $('go').textContent = 'Pause'; $('go').classList.add('pause');
     $('end').hidden = false;
@@ -1342,7 +1365,7 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     if (paused) { pausedTotal += performance.now() - pausedAt; paused = false; }
     else { tick(); }
     halt();
-    document.body.classList.remove('paused');
+    document.body.classList.remove('paused', 'session'); requestAnimationFrame(drawTrace);
     $('statusText').textContent = 'Stopped';
     $('go').textContent = 'Start again'; $('go').classList.remove('pause');
     $('end').hidden = true;
