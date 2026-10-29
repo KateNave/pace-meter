@@ -312,7 +312,7 @@ body.session #err { order: 4; }
       </div>
     </div>
   </details>
-  <p class="note version">Version: 29 Oct 2026, timer</p>
+  <p class="note version">Version: 29 Oct 2026, pauses included</p>
 </main>
 
 <script>
@@ -788,6 +788,18 @@ registerProcessor('syllables', class extends AudioWorkletProcessor {
     store.set('calRuns', l);
     settings.loP = 4.8; settings.hiP = 5.6; store.set('loP', 4.8); store.set('hiP', 5.6); $('loP').value = 4.8; $('hiP').value = 5.6;
     store.set('applied-2026-10-29', true);
+  }
+  // Second Glasgow talk (29 Oct 2026, 21 min): the phone counted 4,505 syllables at 0.81, i.e. about 3,645 live bursts, against
+  // 4,864 transcribed syllables, so the live calibration is 0.75 (the 0.81 came from the compressed recording, which the detector
+  // hears differently). Pauses are now included, with a range of 3.8-4.4 syllables a second: 143 words a minute at the 1.71
+  // syllables per word of both talks is 4.1, and 3.8-4.4 is about 133-154 words a minute.
+  if (!store.get('applied-2026-10-29b', false)) {
+    const l = runs().map(x => x.det === DET && sensOf(x) === 'normal' ? { ...x, on: false } : x);
+    l.push({ id: Date.now() + 1, on: true, det: DET, sens: 'normal', mode: 'talk', text: 'talk', label: 'Glasgow talk 2, live count', rate: 4864 / 1259, bursts: 3645, syl: 4864 });
+    store.set('calRuns', l);
+    settings.pauses = false; store.set('pauses3', false); $('pauses').checked = false;
+    settings.lo = 3.8; settings.hi = 4.4; store.set('lo3', 3.8); store.set('hi3', 4.4); $('lo').value = 3.8; $('hi').value = 4.4;
+    store.set('applied-2026-10-29b', true);
   }
   // detected bursts per real syllable for a filter setting; 1 until calibrated
   const factorFor = sens => { const p = pooled(runsFor(sens)); return p ? p.f : 1; };
